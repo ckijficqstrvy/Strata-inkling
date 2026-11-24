@@ -7,13 +7,28 @@
 
 ---
 
-## 一鍵安裝與下載（新電腦 / 還原環境）
+## 一鍵安裝與下載（Windows + macOS Apple Silicon M1–M5 雙平台）
 
+### Windows（AMD RX 6000/7000/9000 HIP / NVIDIA CUDA）
 ```bat
 git clone https://github.com/ckijficqstrvy/Strata-inkling.git
 cd Strata-inkling
 Install.cmd
 ```
+
+### macOS Apple Silicon（MacBook Pro M5 24 GB · Metal 原生加速）
+```bash
+git clone https://github.com/ckijficqstrvy/Strata-inkling.git
+cd Strata-inkling
+./install-mac.sh
+```
+- **自動匹配最佳量化包**：24 GB 統一記憶體（如 MacBook Pro M5）自動下載 **`SQ-15`（14.35 GB，與原版 top-1 一致率 96.68%）**；32 GB+ 自動下載無損 **`SQ-20`（19.35 GB）**；16 GB 自動下載 **`SQ-10`（10.47 GB）**。
+- **獨立 Metal 引擎**：自動下載 `strata-inkling-0.1.66-macos-arm64-metal.tar.gz`（內嵌 Metal kernel，免裝驅動，需 macOS 15+）與 `strata-control` macOS arm64 版，並自動移除 macOS Gatekeeper 隔離屬性。
+- **預設開啟 DSpark 加速**：Apple Silicon Metal 支援高效矩陣運算，預設採用 `--kv fp8 --draft dspark --max-context 32768`。
+- **免終端機啟動**：安裝完成會自動產生附圖示的原生 **`Inkling-2-Mini 控制台.app`**（可直接拖進 Dock 雙擊開啟），與 Windows 共用同一套 GUI 與開放 Agent 閘道（`:11435`）。
+- 進階參數：`./install-mac.sh --pack SQ-15 --vision --lan`（可加裝 0.64 GB 看圖 Vision 模組或預先開放區網連線）。
+
+---
 
 `Install.cmd`（呼叫 `scripts\Setup-Inkling.ps1`）會自動完成：
 1. **自動偵測顯卡**：自動匹配 `hip-rdna2`（RX 6000）、`hip-rdna3`（RX 7000）、`hip-rx9070`（RX 9000 / R9700）、`hip-strix`（Strix Halo）或 `cuda-cuda12`（NVIDIA），並選擇最適合的 `SQ-10` / `SQ-15` / `SQ-20` 量化包與最佳調校參數。

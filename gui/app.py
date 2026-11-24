@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -24,23 +25,58 @@ GUI_DIR = ROOT / "gui"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from gateway.gateway import AgentGatewayManager  # noqa: E402
+
+IS_WIN = os.name == "nt"
+IS_MAC = sys.platform == "darwin"
+
 CONTROL_DIR = ROOT / "control"
-PYTHON_EXE = CONTROL_DIR / "python" / "python.exe"
-PYTHONW_EXE = CONTROL_DIR / "python" / "pythonw.exe"
+if IS_WIN:
+    PYTHON_EXE = CONTROL_DIR / "python" / "python.exe"
+    PYTHONW_EXE = CONTROL_DIR / "python" / "pythonw.exe"
+    ENGINE_EXE = ROOT / "engine" / "strata-inkling.exe"
+else:
+    _mac_py = CONTROL_DIR / "python" / "bin" / "python3"
+    PYTHON_EXE = _mac_py if _mac_py.is_file() else Path(sys.executable)
+    PYTHONW_EXE = PYTHON_EXE
+    ENGINE_EXE = ROOT / "engine" / "strata-inkling"
+
 SERVER_SCRIPT = CONTROL_DIR / "serve" / "server.py"
-ENGINE_EXE = ROOT / "engine" / "strata-inkling.exe"
-MODEL_FILE = ROOT / "models" / "Inkling-2-Mini-Strata" / "Inkling-2-Mini-SQ-10.strata"
-TOKENIZER_DIR = ROOT / "packs" / "inkling-2-mini-sq-10" / "tokenizer"
+MODELS_DIR = ROOT / "models" / "Inkling-2-Mini-Strata"
 LOGS_DIR = ROOT / "logs"
 STATE_FILE = LOGS_DIR / "server-process.json"
 GUI_STATE_FILE = LOGS_DIR / "gui-process.json"
 
 GUI_HOST = "127.0.0.1"
 GUI_PORT = 8088
-CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0
+
+PACK_CATALOG = {
+    "SQ-20": {
+        "file": "Inkling-2-Mini-SQ-20.strata",
+        "bytes": 19_346_685_952,
+        "sha": "0bbfd52344f0dd4779a7807b5f73554a812f24c035e6877b63cd0d499f7e1b97",
+        "key": "inkling-2-mini-sq-20",
+        "match_pct": "100.00%",
+    },
+    "SQ-15": {
+        "file": "Inkling-2-Mini-SQ-15.strata",
+        "bytes": 14_348_316_672,
+        "sha": "2ea32eed533afba257e2cbee7b073dc2c3da80fe55d1d2d794779b5498e30737",
+        "key": "inkling-2-mini-sq-15",
+        "match_pct": "96.68%",
+    },
+    "SQ-10": {
+        "file": "Inkling-2-Mini-SQ-10.strata",
+        "bytes": 10_471_526_400,
+        "sha": "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934",
+        "key": "inkling-2-mini-sq-10",
+        "match_pct": "92.35%",
+    },
+}
 
 _LOCK = threading.Lock()
 _CONFLICT_CACHE = {"ts": 0.0, "data": []}
+_HW_CACHE: dict | None = None
 _HTTPD_REF: list[ThreadingHTTPServer] = []
 _GATEWAY_REF: list[AgentGatewayManager] = []
 
@@ -49,6 +85,115 @@ def _get_gateway() -> AgentGatewayManager:
     if not _GATEWAY_REF:
         _GATEWAY_REF.append(AgentGatewayManager(get_status, start_model, stop_model))
     return _GATEWAY_REF[0]
+
+
+def _detect_hardware_static() -> dict:
+    global _HW_CACHE
+    if _HW_CACHE is not None:
+        return _HW_CACHE
+    vm = psutil.virtual_memory()
+    ram_gb = round(vm.total / (1024**3), 1)
+    if IS_MAC:
+        chip = "Apple Silicon"
+        try:
+            r = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=2)
+            if r.returncode == 0 and r.stdout.strip():
+                chip = r.stdout.strip()
+        except Exception:
+            pass
+        _HW_CACHE = {
+            "os": "macOS",
+            "is_mac": True,
+            "is_win": False,
+            "backend": "metal",
+            "gpu_name": chip,
+            "gpu_arch": "Apple Silicon Metal (Unified)",
+            "gpu_vram_gb": int(round(ram_gb)),
+            "unified_memory": True,
+            "memory_label": f"{int(round(ram_gb))} GB 統一記憶體",
+            "recommended_mode": "dspark",
+            "default_kv": "fp8",
+        }
+    else:
+        gpu_name = "AMD Radeon RX 6700 XT"
+        gpu_arch = "RDNA2 (gfx1031)"
+        backend = "hip"
+        vram_gb = 12
+        try:
+            build_json = ROOT / "engine" / "BUILD.json"
+            if build_json.is_file():
+                bj = json.loads(build_json.read_text(encoding="utf-8-sig"))
+                if bj.get("variant"):
+                    gpu_arch = f"HIP ({bj['variant']} · {bj.get('archs', '')})"
+                if bj.get("backend") == "cuda":
+                    backend = "cuda"
+        except Exception:
+            pass
+        if IS_WIN:
+            try:
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     "(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'Radeon RX|Radeon AI|NVIDIA|RTX|GTX' } | Select-Object -First 1).Name"],
+                    capture_output=True, text=True, errors="ignore", timeout=3, creationflags=CREATE_NO_WINDOW,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    gpu_name = r.stdout.strip()
+                    if any(k in gpu_name.upper() for k in ("NVIDIA", "RTX", "GTX")):
+                        backend = "cuda"
+                        gpu_arch = "NVIDIA CUDA"
+            except Exception:
+                pass
+        is_rdna2 = backend == "hip" and ("rdna2" in gpu_arch.lower() or "6700" in gpu_name or "6800" in gpu_name or "6900" in gpu_name)
+        _HW_CACHE = {
+            "os": "Windows" if IS_WIN else platform.system(),
+            "is_mac": False,
+            "is_win": IS_WIN,
+            "backend": backend,
+            "gpu_name": gpu_name,
+            "gpu_arch": gpu_arch,
+            "gpu_vram_gb": vram_gb,
+            "unified_memory": False,
+            "memory_label": f"{vram_gb} GB VRAM",
+            "recommended_mode": "fast" if is_rdna2 else "dspark",
+            "default_kv": "k8v8" if is_rdna2 else "fp8",
+        }
+    return _HW_CACHE
+
+
+def detect_installed_model() -> dict:
+    """Detect installed Inkling-2-Mini pack (SQ-20 / SQ-15 / SQ-10) and tokenizer directory."""
+    # Prefer the largest verified pack present in models/Inkling-2-Mini-Strata
+    preferred_order = ("SQ-15", "SQ-20", "SQ-10") if IS_MAC else ("SQ-10", "SQ-15", "SQ-20")
+    for pack_name in preferred_order:
+        meta = PACK_CATALOG[pack_name]
+        fpath = MODELS_DIR / meta["file"]
+        if fpath.is_file() and fpath.stat().st_size == meta["bytes"]:
+            tok_dir = ROOT / "packs" / meta["key"] / "tokenizer"
+            if not tok_dir.is_dir():
+                tok_dir = ROOT / "packs" / "inkling-2-mini-sq-10" / "tokenizer"
+            return {
+                "pack": pack_name,
+                "model_key": meta["key"],
+                "file": fpath,
+                "bytes": meta["bytes"],
+                "sha": meta["sha"],
+                "match_pct": meta["match_pct"],
+                "tokenizer_dir": tok_dir,
+                "ok": True,
+            }
+    # Fallback default before installation finishes
+    fallback = "SQ-15" if IS_MAC else "SQ-10"
+    meta = PACK_CATALOG[fallback]
+    return {
+        "pack": fallback,
+        "model_key": meta["key"],
+        "file": MODELS_DIR / meta["file"],
+        "bytes": meta["bytes"],
+        "sha": meta["sha"],
+        "match_pct": meta["match_pct"],
+        "tokenizer_dir": ROOT / "packs" / meta["key"] / "tokenizer",
+        "ok": False,
+    }
 
 
 def _port_open(port: int) -> bool:
@@ -98,25 +243,18 @@ def _check_conflicts(active_port: int) -> list[dict]:
     if now - _CONFLICT_CACHE["ts"] < 5.0:
         return _CONFLICT_CACHE["data"]
     warnings: list[dict] = []
-    # 1. Check if G:\AI\Strata (Qwen) on 8080 is running
-    if active_port != 8080 and _port_open(8080):
+    if not IS_MAC and active_port != 8080 and _port_open(8080):
         warnings.append({
             "kind": "qwen_8080",
             "level": "warn",
-            "title": "偵測到 Port 8080 服務正在運作（可能是 G:\\AI\\Strata 的 Qwen）",
-            "detail": "RX 6700 XT 只有 12 GB 顯存，建議先停止 Qwen 服務再啟動 Inkling-2-Mini，確保 100% VRAM 全速運作。",
+            "title": "偵測到 Port 8080 服務正在運作（可能是另一個 Strata 模型）",
+            "detail": "建議錯開使用以確保 100% 顯存獨佔、跑出最高速度。",
         })
-    # 2. Check if Ollama currently has any model loaded in VRAM
     ollama = shutil.which("ollama")
     if ollama:
         try:
-            r = subprocess.run(
-                [ollama, "ps"],
-                capture_output=True,
-                text=True,
-                timeout=2.5,
-                creationflags=CREATE_NO_WINDOW,
-            )
+            kwargs = {"creationflags": CREATE_NO_WINDOW} if IS_WIN else {}
+            r = subprocess.run([ollama, "ps"], capture_output=True, text=True, errors="ignore", timeout=2.5, **kwargs)
             lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
             if len(lines) > 1:
                 loaded_names = [ln.split()[0] for ln in lines[1:]]
@@ -124,7 +262,7 @@ def _check_conflicts(active_port: int) -> list[dict]:
                     "kind": "ollama_vram",
                     "level": "warn",
                     "title": f"偵測到 Ollama 正載入模型：{', '.join(loaded_names)}",
-                    "detail": "Ollama 會佔用 GPU 顯存；若要讓 Inkling-2-Mini 100% 駐留顯存跑滿速，請先卸載 Ollama 模型。",
+                    "detail": "Ollama 會佔用 GPU 顯存 / 統一記憶體；若要讓 Inkling-2-Mini 全速運作，建議先卸載 Ollama 模型。",
                 })
         except Exception:
             pass
@@ -134,24 +272,39 @@ def _check_conflicts(active_port: int) -> list[dict]:
 
 
 def _read_active_config_defaults() -> dict:
-    cfg_path = ROOT / "strata-inkling-sq10.json"
-    out = {"mode": "fast", "context": 32768, "kv": "k8v8", "port": 8081}
-    if cfg_path.is_file():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-            args = cfg.get("args") or []
-            if "--max-context" in args:
-                out["context"] = int(args[args.index("--max-context") + 1])
-            if "--kv" in args:
-                out["kv"] = str(args[args.index("--kv") + 1])
-            if cfg.get("port"):
-                out["port"] = int(cfg["port"])
-        except Exception:
-            pass
+    hw = _detect_hardware_static()
+    mdl = detect_installed_model()
+    out = {
+        "mode": hw["recommended_mode"],
+        "context": 32768,
+        "kv": hw["default_kv"],
+        "port": 8081,
+    }
+    for cand in (
+        ROOT / f"strata-{mdl['model_key']}.json",
+        ROOT / "strata-inkling-sq10.json",
+    ):
+        if cand.is_file():
+            try:
+                cfg = json.loads(cand.read_text(encoding="utf-8-sig"))
+                args = cfg.get("args") or []
+                if "--max-context" in args:
+                    out["context"] = int(args[args.index("--max-context") + 1])
+                if "--kv" in args:
+                    out["kv"] = str(args[args.index("--kv") + 1])
+                if "--draft" in args:
+                    out["mode"] = "dspark" if str(args[args.index("--draft") + 1]) == "dspark" else "fast"
+                if cfg.get("port"):
+                    out["port"] = int(cfg["port"])
+                break
+            except Exception:
+                pass
     return out
 
 
 def get_status() -> dict:
+    hw = _detect_hardware_static()
+    mdl = detect_installed_model()
     st, proc = _find_alive_server()
     defaults = _read_active_config_defaults()
     port = int((st or {}).get("port") or defaults["port"])
@@ -177,7 +330,6 @@ def get_status() -> dict:
         else:
             state_str = "starting"
     elif _port_open(port):
-        # Something is already serving on port (maybe started via CMD)
         health = _fetch_json(f"http://127.0.0.1:{port}/health", timeout=1.0)
         if health and health.get("service") == "strata":
             state_str = "running" if health.get("loaded", True) else "starting"
@@ -188,7 +340,6 @@ def get_status() -> dict:
     vm = psutil.virtual_memory()
     disk = shutil.disk_usage(str(ROOT))
     cpu_pct = psutil.cpu_percent(interval=None)
-    model_ok = MODEL_FILE.is_file() and MODEL_FILE.stat().st_size == 10_471_526_400
     engine_ok = ENGINE_EXE.is_file()
 
     return {
@@ -201,6 +352,14 @@ def get_status() -> dict:
         "uptime_s": round(uptime_s, 1),
         "health": health,
         "models": models,
+        "platform": {
+            "os": hw["os"],
+            "is_mac": hw["is_mac"],
+            "is_win": hw["is_win"],
+            "backend": hw["backend"],
+            "recommended_mode": hw["recommended_mode"],
+            "default_kv": hw["default_kv"],
+        },
         "endpoints": {
             "chat_ui": f"http://127.0.0.1:{port}",
             "openai_base": f"http://127.0.0.1:{port}/v1",
@@ -208,9 +367,11 @@ def get_status() -> dict:
             "anthropic_messages": f"http://127.0.0.1:{port}/v1/messages",
         },
         "hardware": {
-            "gpu_name": "AMD Radeon RX 6700 XT",
-            "gpu_vram_gb": 12,
-            "gpu_arch": "RDNA2 (gfx1031)",
+            "gpu_name": hw["gpu_name"],
+            "gpu_vram_gb": hw["gpu_vram_gb"],
+            "gpu_arch": hw["gpu_arch"],
+            "unified_memory": hw["unified_memory"],
+            "memory_label": hw["memory_label"],
             "cpu_pct": round(cpu_pct, 1),
             "ram_used_gb": round((vm.total - vm.available) / (1024**3), 1),
             "ram_total_gb": round(vm.total / (1024**3), 1),
@@ -218,10 +379,15 @@ def get_status() -> dict:
             "disk_free_gb": round(disk.free / (1024**3), 1),
         },
         "files": {
-            "model_ok": model_ok,
-            "model_size_gb": round(MODEL_FILE.stat().st_size / 1e9, 2) if MODEL_FILE.is_file() else 0.0,
+            "model_ok": mdl["ok"],
+            "model_pack": mdl["pack"],
+            "model_key": mdl["model_key"],
+            "model_bytes": mdl["bytes"],
+            "model_sha": mdl["sha"],
+            "model_match_pct": mdl["match_pct"],
+            "model_size_gb": round(mdl["bytes"] / 1e9, 2),
             "engine_ok": engine_ok,
-            "engine_version": "strata-inkling 0.1.66 (Strata v0.2.20)",
+            "engine_version": f"strata-inkling 0.1.66 ({hw['backend'].upper()})",
         },
         "gateway": _GATEWAY_REF[0].status() if _GATEWAY_REF else None,
         "warnings": _check_conflicts(port),
@@ -234,18 +400,21 @@ def start_model(params: dict) -> dict:
         if existing is not None:
             return {"ok": True, "already_running": True, "status": get_status()}
 
-        mode = str(params.get("mode") or "fast").lower()
+        hw = _detect_hardware_static()
+        mdl = detect_installed_model()
+
+        mode = str(params.get("mode") or hw["recommended_mode"]).lower()
         if mode not in ("fast", "dspark"):
-            mode = "fast"
+            mode = hw["recommended_mode"]
         try:
             context = int(params.get("context") or 32768)
         except (TypeError, ValueError):
             context = 32768
-        if context not in (8192, 16384, 32768, 65536):
+        if context not in (8192, 16384, 32768, 65536, 131072):
             context = 32768
-        kv = str(params.get("kv") or "k8v8").lower()
-        if kv not in ("k8v8", "k8v4", "fp8"):
-            kv = "k8v8"
+        kv = str(params.get("kv") or hw["default_kv"]).lower()
+        if kv not in ("k8v8", "k8v4", "fp8", "fp16"):
+            kv = hw["default_kv"]
         try:
             port = int(params.get("port") or 8081)
         except (TypeError, ValueError):
@@ -255,34 +424,43 @@ def start_model(params: dict) -> dict:
 
         if _port_open(port):
             return {"ok": False, "error": f"連接埠 {port} 已被其他程式佔用，請先停止該程式或更換埠號。"}
-        if not MODEL_FILE.is_file() or not ENGINE_EXE.is_file():
-            return {"ok": False, "error": "找不到模型檔或引擎執行檔，請檢查 g:\\AI\\Strata-inkling 目錄。"}
+        if not mdl["ok"] or not ENGINE_EXE.is_file():
+            hint = "./install-mac.sh" if IS_MAC else "Install.cmd"
+            return {"ok": False, "error": f"找不到模型檔（{mdl['pack']}）或引擎執行檔，請先執行 {hint}。"}
 
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         draft_arg = "dspark" if mode == "dspark" else "off"
-        cfg_file = ROOT / ("strata-inkling-sq10-dspark.json" if mode == "dspark" else "strata-inkling-sq10.json")
-        engine_log = LOGS_DIR / ("strata-inkling-sq10-dspark.log" if mode == "dspark" else "strata-inkling-sq10.log")
+        suffix = "-dspark" if mode == "dspark" else ""
+        cfg_file = ROOT / f"strata-{mdl['model_key']}{suffix}.json"
+        engine_log = LOGS_DIR / f"strata-{mdl['model_key']}{suffix}.log"
 
+        args = [
+            "--native", str(mdl["file"]),
+            "--max-context", str(context),
+            "--kv", kv,
+            "--draft", draft_arg,
+        ]
+        vis_file = MODELS_DIR / "Inkling-2-Mini-Vision.strata"
+        if vis_file.is_file() and (IS_MAC or params.get("vision")):
+            args += ["--vision", str(vis_file)]
+
+        # On macOS Metal, temperature=1.0 works great with DSpark; on Windows RDNA2, DSpark is a low-temp burst profile
+        default_temp = 1.0 if (IS_MAC or mode != "dspark") else 0.2
         cfg = {
             "exe": str(ENGINE_EXE),
-            "args": [
-                "--native", str(MODEL_FILE),
-                "--max-context", str(context),
-                "--kv", kv,
-                "--draft", draft_arg,
-            ],
+            "args": args,
             "cwd": str(CONTROL_DIR),
-            "tokenizer": str(TOKENIZER_DIR),
-            "model_name": "inkling-2-mini-sq-10",
-            "aliases": ["inkling-2-mini", "inkling", "strata"],
+            "tokenizer": str(mdl["tokenizer_dir"]),
+            "model_name": mdl["model_key"],
+            "aliases": [mdl["model_key"], "inkling-2-mini-sq-10", "inkling-2-mini-sq-15", "inkling-2-mini", "inkling", "strata"],
             "arch": "inkling2_loop",
-            "backend": "hip",
+            "backend": hw["backend"],
             "log": str(engine_log),
-            "lib_dirs": [str(ROOT / "engine")],
+            "lib_dirs": [] if IS_MAC else [str(ROOT / "engine")],
             "port": port,
             "drafting": draft_arg,
             "parallel": 1,
-            "sampling": {"temperature": 0.2 if mode == "dspark" else 1.0},
+            "sampling": {"temperature": default_temp},
             "fit_max_tokens": True,
             "open_browser": False,
         }
@@ -299,6 +477,16 @@ def start_model(params: dict) -> dict:
         out_f = open(stdout_log, "w", encoding="utf-8")
         err_f = open(stderr_log, "w", encoding="utf-8")
         try:
+            popen_kwargs: dict = {
+                "cwd": str(CONTROL_DIR),
+                "env": env,
+                "stdout": out_f,
+                "stderr": err_f,
+            }
+            if IS_WIN:
+                popen_kwargs["creationflags"] = CREATE_NO_WINDOW
+            else:
+                popen_kwargs["start_new_session"] = True
             proc = subprocess.Popen(
                 [
                     str(PYTHON_EXE),
@@ -309,11 +497,7 @@ def start_model(params: dict) -> dict:
                     "--port", str(port),
                     "--offline",
                 ],
-                cwd=str(CONTROL_DIR),
-                env=env,
-                stdout=out_f,
-                stderr=err_f,
-                creationflags=CREATE_NO_WINDOW,
+                **popen_kwargs,
             )
         finally:
             out_f.close()
@@ -325,6 +509,7 @@ def start_model(params: dict) -> dict:
             "port": port,
             "context": context,
             "kv": kv,
+            "pack": mdl["pack"],
             "config": str(cfg_file),
             "engine_log": str(engine_log),
             "stdout": str(stdout_log),
@@ -336,7 +521,7 @@ def start_model(params: dict) -> dict:
 
 def stop_model() -> dict:
     with _LOCK:
-        st, proc = _find_alive_server()
+        _, proc = _find_alive_server()
         killed: list[int] = []
 
         if proc is not None:
@@ -357,15 +542,14 @@ def stop_model() -> dict:
                 pass
             psutil.wait_procs([proc] + children, timeout=6)
 
-        # Clean up any orphaned strata-inkling.exe or server.py owned by this workspace
-        root_low = str(ROOT).lower()
+        root_low = str(ROOT).replace("\\", "/").lower()
         for p in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
             try:
                 name = (p.info.get("name") or "").lower()
-                exe = (p.info.get("exe") or "").lower()
-                cmd = " ".join(p.info.get("cmdline") or []).lower()
-                is_our_engine = name == "strata-inkling.exe" and exe.startswith(root_low)
-                is_our_srv = "serve\\server.py" in cmd and root_low in cmd
+                exe = (p.info.get("exe") or "").replace("\\", "/").lower()
+                cmd = " ".join(p.info.get("cmdline") or []).replace("\\", "/").lower()
+                is_our_engine = name in ("strata-inkling.exe", "strata-inkling") and exe.startswith(root_low)
+                is_our_srv = "serve/server.py" in cmd and root_low in cmd
                 if is_our_engine or is_our_srv:
                     p.kill()
                     killed.append(p.pid)
@@ -488,24 +672,20 @@ class GuiHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         p = parsed.path
         if p == "/api/start":
-            body = self._read_body_json()
-            return self._send_json(start_model(body))
+            return self._send_json(start_model(self._read_body_json()))
         if p == "/api/stop":
             return self._send_json(stop_model())
         if p == "/api/gateway/start":
             body = self._read_body_json()
             gw = _get_gateway()
-            if body:
-                body["enabled"] = True
-            return self._send_json(gw.start(body or {"enabled": True}))
+            body["enabled"] = True
+            return self._send_json(gw.start(body))
         if p == "/api/gateway/stop":
             gw = _get_gateway()
             gw.update_config({"enabled": False}, restart_if_running=False)
             return self._send_json(gw.stop())
         if p == "/api/gateway/config":
-            body = self._read_body_json()
-            gw = _get_gateway()
-            return self._send_json(gw.update_config(body, restart_if_running=True))
+            return self._send_json(_get_gateway().update_config(self._read_body_json(), restart_if_running=True))
         if p == "/api/open_chat":
             st = get_status()
             url = st["endpoints"]["chat_ui"]
@@ -515,8 +695,12 @@ class GuiHandler(BaseHTTPRequestHandler):
             body = self._read_body_json()
             target = LOGS_DIR if body.get("target") == "logs" else ROOT
             target.mkdir(parents=True, exist_ok=True)
-            if os.name == "nt":
+            if IS_WIN:
                 os.startfile(str(target))
+            elif IS_MAC:
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
             return self._send_json({"ok": True, "path": str(target)})
         if p == "/api/shutdown_gui":
             body = self._read_body_json()
@@ -547,9 +731,10 @@ class GuiHandler(BaseHTTPRequestHandler):
         max_tokens = min(max(int(body.get("max_tokens") or 256), 16), 2048)
         temperature = float(body.get("temperature") if body.get("temperature") is not None else 1.0)
         port = st["port"]
+        model_id = st["files"]["model_key"]
 
         payload = json.dumps({
-            "model": "inkling-2-mini-sq-10",
+            "model": model_id,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -613,26 +798,50 @@ class GuiHandler(BaseHTTPRequestHandler):
 def open_app_window(url: str) -> None:
     profile_dir = GUI_DIR / ".app-profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
-    candidates = [
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / r"Microsoft\Edge\Application\msedge.exe",
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / r"Microsoft\Edge\Application\msedge.exe",
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / r"Google\Chrome\Application\chrome.exe",
-        Path(os.environ.get("LOCALAPPDATA", "")) / r"Google\Chrome\Application\chrome.exe",
-    ]
-    for browser in candidates:
-        if browser.is_file():
-            subprocess.Popen(
-                [
-                    str(browser),
-                    f"--app={url}",
-                    f"--user-data-dir={profile_dir}",
-                    "--window-size=1260,860",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
-                creationflags=CREATE_NO_WINDOW,
-            )
-            return
+    if IS_WIN:
+        candidates = [
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / r"Microsoft\Edge\Application\msedge.exe",
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / r"Microsoft\Edge\Application\msedge.exe",
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / r"Google\Chrome\Application\chrome.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / r"Google\Chrome\Application\chrome.exe",
+        ]
+        for browser in candidates:
+            if browser.is_file():
+                subprocess.Popen(
+                    [
+                        str(browser),
+                        f"--app={url}",
+                        f"--user-data-dir={profile_dir}",
+                        "--window-size=1260,860",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                    ],
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                return
+    elif IS_MAC:
+        candidates = [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            Path("/Applications/Arc.app/Contents/MacOS/Arc"),
+        ]
+        for browser in candidates:
+            if browser.is_file():
+                subprocess.Popen(
+                    [
+                        str(browser),
+                        f"--app={url}",
+                        f"--user-data-dir={profile_dir}",
+                        "--window-size=1260,860",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                    ],
+                    start_new_session=True,
+                )
+                return
+        subprocess.Popen(["open", url], start_new_session=True)
+        return
     webbrowser.open(url)
 
 
@@ -661,11 +870,14 @@ def launch_gui() -> None:
     url = f"http://{GUI_HOST}:{GUI_PORT}"
     if not _fetch_json(f"{url}/api/ping", timeout=0.6):
         exe = str(PYTHONW_EXE if PYTHONW_EXE.is_file() else PYTHON_EXE)
-        subprocess.Popen(
-            [exe, str(Path(__file__).resolve()), "--serve"],
-            cwd=str(ROOT),
-            creationflags=CREATE_NO_WINDOW,
-        )
+        popen_kwargs: dict = {"cwd": str(ROOT)}
+        if IS_WIN:
+            popen_kwargs["creationflags"] = CREATE_NO_WINDOW
+        else:
+            popen_kwargs["start_new_session"] = True
+            popen_kwargs["stdout"] = subprocess.DEVNULL
+            popen_kwargs["stderr"] = subprocess.DEVNULL
+        subprocess.Popen([exe, str(Path(__file__).resolve()), "--serve"], **popen_kwargs)
         deadline = time.time() + 12.0
         while time.time() < deadline:
             if _fetch_json(f"{url}/api/ping", timeout=0.5):
@@ -677,7 +889,5 @@ def launch_gui() -> None:
 if __name__ == "__main__":
     if "--serve" in sys.argv:
         run_server()
-    elif "--launch" in sys.argv:
-        launch_gui()
     else:
         launch_gui()

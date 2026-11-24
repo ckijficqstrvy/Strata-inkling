@@ -742,9 +742,9 @@
         <div>
           <h1>
             Strata Inkling-2-Mini 控制台
-            <span class="badge-ver">v0.2.20 · SQ-10</span>
+            <span id="badgeVer" class="badge-ver">v0.2.20 · SQ-10</span>
           </h1>
-          <div class="subtitle">RX 6700 XT 12 GB（RDNA2 gfx1031）專屬 100% 全顯存調校環境</div>
+          <div id="brandSubtitle" class="subtitle">RX 6700 XT 12 GB（RDNA2 gfx1031）專屬 100% 全顯存調校環境</div>
         </div>
       </div>
       <div class="top-actions">
@@ -772,19 +772,19 @@
         <div class="metric-sub" id="metricModeSub">雙擊啟動僅需約 8.6 秒載入</div>
       </div>
       <div class="metric-card">
-        <div class="metric-label"><span>顯卡與顯存駐留</span><span>gfx1031 HIP</span></div>
-        <div class="metric-val" style="color: #34d399;">100% VRAM</div>
-        <div class="metric-sub">RX 6700 XT 12 GB · SQ-10 (10.47 GB)</div>
+        <div class="metric-label"><span>硬體與記憶體駐留</span><span id="metricArch">gfx1031 HIP</span></div>
+        <div class="metric-val" id="metricVram" style="color: #34d399;">100% VRAM</div>
+        <div class="metric-sub" id="metricGpuSub">RX 6700 XT 12 GB · SQ-10 (10.47 GB)</div>
       </div>
       <div class="metric-card">
         <div class="metric-label"><span>系統記憶體 / CPU</span><span id="metricCpu">CPU —%</span></div>
         <div class="metric-val" id="metricRam">— / — GB</div>
-        <div class="metric-sub" id="metricDisk">G 槽可用空間 — GB</div>
+        <div class="metric-sub" id="metricDisk">可用磁碟空間 — GB</div>
       </div>
       <div class="metric-card">
-        <div class="metric-label"><span>實測最佳出字速度</span><span>32K 上下文</span></div>
-        <div class="metric-val" style="color: #38bdf8;">24.8–26.9 tok/s</div>
-        <div class="metric-sub">低溫 DSpark 數學/程式可達 31.6 tok/s</div>
+        <div class="metric-label"><span>調校目標速度</span><span>32K 上下文</span></div>
+        <div class="metric-val" id="metricSpeed" style="color: #38bdf8;">24.8–26.9 tok/s</div>
+        <div class="metric-sub" id="metricSpeedSub">低溫 DSpark 數學/程式可達 31.6 tok/s</div>
       </div>
     </section>
 
@@ -860,11 +860,12 @@
           <div class="field">
             <label for="selKv">KV 快取量化格式</label>
             <select id="selKv">
-              <option value="k8v8" selected>k8v8（原生 INT8 · 最快最穩推薦）</option>
+              <option value="k8v8" selected>k8v8（原生 INT8 · RDNA2 最快推薦）</option>
+              <option value="fp8">fp8（通用 8-bit 浮點 · Apple Metal 推薦）</option>
               <option value="k8v4">k8v4（超長文本更省顯存）</option>
-              <option value="fp8">fp8（通用 8-bit 浮點）</option>
+              <option value="fp16">fp16（無損 16-bit · 大記憶體專用）</option>
             </select>
-            <div class="field-hint">本機實測 <code>k8v8</code> 比 <code>fp16</code> 快 +73%，長文 Prefill 比 <code>fp8</code> 再快 +14%。</div>
+            <div id="kvHint" class="field-hint">本機實測 <code>k8v8</code> 比 <code>fp16</code> 快 +73%，長文 Prefill 比 <code>fp8</code> 再快 +14%。</div>
           </div>
           <div class="field">
             <label for="inpPort">本機服務連接埠（Port）</label>
@@ -1207,6 +1208,7 @@ print(resp.choices[0].message.content)</pre>
     let currentLogKind = "engine";
     let streamingAbort = false;
     let gwFormInit = false;
+    let platformInit = false;
 
     const PRESETS = {
       zh: "請用繁體中文詳細說明 Mixture of Experts（MoE）與 KV Cache 量化（k8v8）如何讓 26B 模型順暢跑在 12 GB 顯卡上，約 150 字。",
@@ -1299,7 +1301,36 @@ print(resp.choices[0].message.content)`;
 
         document.getElementById("metricCpu").textContent = `CPU ${st.hardware.cpu_pct}%`;
         document.getElementById("metricRam").textContent = `${st.hardware.ram_used_gb} / ${st.hardware.ram_total_gb} GB`;
-        document.getElementById("metricDisk").textContent = `RAM 使用率 ${st.hardware.ram_pct}% · G 槽可用 ${st.hardware.disk_free_gb} GB`;
+        document.getElementById("metricDisk").textContent = `RAM 使用率 ${st.hardware.ram_pct}% · 可用磁碟 ${st.hardware.disk_free_gb} GB`;
+
+        if (st.files && st.files.model_pack) {
+          document.getElementById("badgeVer").textContent = `v0.2.20 · ${st.files.model_pack}`;
+          document.getElementById("epModel").textContent = st.files.model_key;
+          document.getElementById("gwEpModel").textContent = st.files.model_key;
+        }
+        if (st.hardware) {
+          document.getElementById("metricArch").textContent = st.hardware.gpu_arch;
+          document.getElementById("metricVram").textContent = st.hardware.unified_memory ? "100% 統一記憶體" : "100% VRAM";
+          document.getElementById("metricGpuSub").textContent =
+            `${st.hardware.gpu_name} · ${st.files.model_pack} (${st.files.model_size_gb} GB)`;
+          document.getElementById("brandSubtitle").textContent =
+            `${st.hardware.gpu_name}（${st.hardware.memory_label} · ${st.hardware.gpu_arch}）專屬調校環境`;
+        }
+        if (!platformInit && st.platform) {
+          platformInit = true;
+          selectMode(st.platform.recommended_mode || "fast");
+          document.getElementById("selKv").value = st.platform.default_kv || "k8v8";
+          if (st.platform.is_mac) {
+            document.getElementById("metricSpeed").textContent = "Metal + DSpark";
+            document.getElementById("metricSpeedSub").textContent = "Apple Silicon 建議開啟 DSpark 加速";
+            document.getElementById("kvHint").innerHTML = "Apple Silicon Metal 預設使用 <code>fp8</code>（省記憶體又快），24 GB 跑 SQ-15 亦支援無損 <code>fp16</code>。";
+            const recDspark = document.querySelector("#cardDspark .pill-alt");
+            if (recDspark) { recDspark.textContent = "Mac Metal 推薦預設"; recDspark.className = "pill-rec"; }
+            const altFast = document.querySelector("#cardFast .pill-rec");
+            if (altFast) { altFast.textContent = "純解碼模式"; altFast.className = "pill-alt"; }
+            document.getElementById("playTemp").value = "1.0";
+          }
+        }
 
         document.getElementById("btnStart").disabled = (st.state !== "stopped");
         document.getElementById("btnStop").disabled = (st.state === "stopped");

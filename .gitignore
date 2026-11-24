@@ -9,12 +9,13 @@ packs/
 logs/
 gui/.app-profile/
 
-# Machine-specific generated configs (may contain local paths or API key) and shortcuts
-strata-inkling-sq10.json
-strata-inkling-sq10-dspark.json
+# Machine-specific generated configs (may contain local paths or API key) and app shortcuts
+strata-inkling-*.json
+strata-inkling-2-mini-*.json
 gateway-config.json
 *.bak
 *.lnk
+*.app/
 
 # Python & OS artifacts
 __pycache__/

@@ -26,23 +26,28 @@ DEFAULT_GATEWAY_CONFIG = {
     "api_key": "",            # Optional; recommended when host == "0.0.0.0"
     "auto_wake": True,        # Auto-start Strata engine when an external Agent calls
     "idle_unload_min": 0,     # 0 = never auto-unload; >0 = unload model after N idle minutes
-    "default_mode": "fast",   # Mode used when auto-waking ("fast" or "dspark")
+    "default_mode": "dspark" if sys.platform == "darwin" else "fast",
     "default_context": 32768,
-    "default_kv": "k8v8",
+    "default_kv": "fp8" if sys.platform == "darwin" else "k8v8",
     "backend_port": 8081,
 }
 
-MODEL_PRIMARY = "inkling-2-mini-sq-10"
+MODEL_PRIMARY = "inkling-2-mini-sq-15" if sys.platform == "darwin" else "inkling-2-mini-sq-10"
 MODEL_ALIASES = [
     "inkling-2-mini-sq-10",
+    "inkling-2-mini-sq-15",
+    "inkling-2-mini-sq-20",
     "inkling-2-mini",
     "inkling-2-mini:latest",
-    "inkling-2-mini-sq-10:latest",
     "inkling",
     "strata",
 ]
-MODEL_BYTES = 10_471_526_400
-MODEL_DIGEST = "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934"
+MODEL_BYTES = 14_348_316_672 if sys.platform == "darwin" else 10_471_526_400
+MODEL_DIGEST = (
+    "2ea32eed533afba257e2cbee7b073dc2c3da80fe55d1d2d794779b5498e30737"
+    if sys.platform == "darwin"
+    else "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934"
+)
 
 
 def load_gateway_config() -> dict:
@@ -395,37 +400,53 @@ class _GatewayHTTPHandler(BaseHTTPRequestHandler):
 
         self._send_json({"error": {"message": f"Unknown POST endpoint: {path}"}}, status=404)
 
+    def _active_model_info(self) -> dict:
+        st = self.mgr.get_model_status()
+        files = st.get("files") or {}
+        pack = files.get("model_pack") or ("SQ-15" if sys.platform == "darwin" else "SQ-10")
+        key = files.get("model_key") or MODEL_PRIMARY
+        nbytes = int(files.get("model_bytes") or MODEL_BYTES)
+        sha = str(files.get("model_sha") or MODEL_DIGEST)
+        ctx = int(st.get("context") or 32768)
+        aliases = [key, f"{key}:latest", "inkling-2-mini", "inkling-2-mini:latest", "inkling", "strata"]
+        dedup = []
+        for a in aliases:
+            if a not in dedup:
+                dedup.append(a)
+        return {"pack": pack, "key": key, "bytes": nbytes, "sha": sha, "ctx": ctx, "aliases": dedup, "state": st.get("state")}
+
     # ---------- Model Catalogs ----------
     def _openai_model_obj(self, model_id: str) -> dict:
-        st = self.mgr.get_model_status()
+        info = self._active_model_info()
         return {
             "id": model_id,
             "object": "model",
             "created": 1763900000,
             "owned_by": "strata-inkling",
-            "max_model_len": int(st.get("context") or 32768),
-            "context_length": int(st.get("context") or 32768),
+            "max_model_len": info["ctx"],
+            "context_length": info["ctx"],
         }
 
     def _handle_openai_models(self) -> None:
-        data = [self._openai_model_obj(m) for m in MODEL_ALIASES]
+        info = self._active_model_info()
+        data = [self._openai_model_obj(m) for m in info["aliases"]]
         self._send_json({"object": "list", "data": data})
 
     def _handle_lmstudio_models(self) -> None:
-        st = self.mgr.get_model_status()
-        state = "loaded" if st.get("state") == "running" else "not-loaded"
-        ctx = int(st.get("context") or 32768)
+        info = self._active_model_info()
+        state = "loaded" if info["state"] == "running" else "not-loaded"
+        ctx = info["ctx"]
         self._send_json({
             "object": "list",
             "data": [
                 {
-                    "id": MODEL_PRIMARY,
+                    "id": info["key"],
                     "object": "model",
                     "type": "llm",
                     "publisher": "thinkingmachines / strata",
                     "arch": "inkling2_loop",
                     "compatibility_type": "strata",
-                    "quantization": "SQ-10",
+                    "quantization": info["pack"],
                     "state": state,
                     "max_context_length": ctx,
                     "loaded_context_length": ctx if state == "loaded" else 0,
@@ -434,47 +455,49 @@ class _GatewayHTTPHandler(BaseHTTPRequestHandler):
         })
 
     def _ollama_model_entry(self, name: str) -> dict:
+        info = self._active_model_info()
         now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return {
             "name": name,
             "model": name,
             "modified_at": now_iso,
-            "size": MODEL_BYTES,
-            "digest": MODEL_DIGEST,
+            "size": info["bytes"],
+            "digest": info["sha"],
             "details": {
                 "parent_model": "",
                 "format": "strata",
                 "family": "inkling2",
                 "families": ["inkling2"],
                 "parameter_size": "26.4B",
-                "quantization_level": "SQ-10",
+                "quantization_level": info["pack"],
             },
         }
 
     def _handle_ollama_tags(self) -> None:
+        info = self._active_model_info()
         self._send_json({
             "models": [
                 self._ollama_model_entry("inkling-2-mini:latest"),
-                self._ollama_model_entry("inkling-2-mini-sq-10:latest"),
+                self._ollama_model_entry(f"{info['key']}:latest"),
             ]
         })
 
     def _handle_ollama_ps(self) -> None:
-        st = self.mgr.get_model_status()
-        if st.get("state") != "running":
+        info = self._active_model_info()
+        if info["state"] != "running":
             return self._send_json({"models": []})
         exp = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
         entry = self._ollama_model_entry("inkling-2-mini:latest")
-        entry["size_vram"] = 11_200_000_000
+        entry["size_vram"] = int(info["bytes"] * 1.08)
         entry["expires_at"] = exp
-        entry["context_length"] = int(st.get("context") or 32768)
+        entry["context_length"] = info["ctx"]
         self._send_json({"models": [entry]})
 
     def _handle_ollama_show(self) -> None:
-        st = self.mgr.get_model_status()
-        ctx = int(st.get("context") or 32768)
+        info = self._active_model_info()
+        ctx = info["ctx"]
         self._send_json({
-            "modelfile": "# Strata Inkling-2-Mini SQ-10 (RX 6700 XT 100% VRAM tuned)\nFROM Inkling-2-Mini-SQ-10.strata",
+            "modelfile": f"# Strata Inkling-2-Mini {info['pack']} (Strata native)\nFROM Inkling-2-Mini-{info['pack']}.strata",
             "parameters": f"num_ctx {ctx}\ntemperature 1.0",
             "template": "{{ .Prompt }}",
             "details": {
@@ -483,7 +506,7 @@ class _GatewayHTTPHandler(BaseHTTPRequestHandler):
                 "family": "inkling2",
                 "families": ["inkling2"],
                 "parameter_size": "26.4B",
-                "quantization_level": "SQ-10",
+                "quantization_level": info["pack"],
             },
             "model_info": {
                 "general.architecture": "inkling2",
