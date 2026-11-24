@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 GUI_DIR = ROOT / "gui"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from gateway.gateway import AgentGatewayManager  # noqa: E402
+from gateway.gateway import AgentGatewayManager, load_gateway_config, save_gateway_config  # noqa: E402
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -194,17 +194,51 @@ def _detect_hardware_static() -> dict:
     return _HW_CACHE
 
 
-def detect_installed_model() -> dict:
-    """Detect installed Inkling-2-Mini pack (SQ-20 / SQ-15 / SQ-10) and tokenizer directory."""
-    # Prefer the largest verified pack present in models/Inkling-2-Mini-Strata
-    preferred_order = ("SQ-20", "SQ-15", "SQ-10") if IS_MAC else ("SQ-10", "SQ-15", "SQ-20")
-    for pack_name in preferred_order:
+def _resolve_tokenizer_dir(model_key: str) -> Path:
+    tok_dir = ROOT / "packs" / model_key / "tokenizer"
+    if tok_dir.is_dir():
+        return tok_dir
+    for fallback_key in ("inkling-2-mini-sq-10", "inkling-2-mini-sq-15", "inkling-2-mini-sq-20"):
+        cand = ROOT / "packs" / fallback_key / "tokenizer"
+        if cand.is_dir():
+            return cand
+    return tok_dir
+
+
+def list_installed_packs() -> list[dict]:
+    """Return status of all Inkling-2-Mini quant packs in PACK_CATALOG."""
+    out: list[dict] = []
+    for pack_name in ("SQ-10", "SQ-15", "SQ-20"):
+        meta = PACK_CATALOG[pack_name]
+        fpath = MODELS_DIR / meta["file"]
+        installed = fpath.is_file() and fpath.stat().st_size == meta["bytes"]
+        out.append({
+            "pack": pack_name,
+            "model_key": meta["key"],
+            "size_gb": round(meta["bytes"] / 1e9, 2),
+            "match_pct": meta["match_pct"],
+            "installed": installed,
+        })
+    return out
+
+
+def detect_installed_model(preferred_pack: str | None = None) -> dict:
+    """Detect installed Inkling-2-Mini pack (SQ-10 / SQ-15 / SQ-20) and tokenizer directory."""
+    gw_pack = ""
+    if _GATEWAY_REF:
+        gw_pack = str(_GATEWAY_REF[0].config.get("default_pack") or "").upper()
+    else:
+        gw_pack = str(load_gateway_config().get("default_pack") or "").upper()
+
+    order: list[str] = []
+    for cand in (str(preferred_pack or "").upper(), gw_pack, "SQ-10", "SQ-15", "SQ-20"):
+        if cand in PACK_CATALOG and cand not in order:
+            order.append(cand)
+
+    for pack_name in order:
         meta = PACK_CATALOG[pack_name]
         fpath = MODELS_DIR / meta["file"]
         if fpath.is_file() and fpath.stat().st_size == meta["bytes"]:
-            tok_dir = ROOT / "packs" / meta["key"] / "tokenizer"
-            if not tok_dir.is_dir():
-                tok_dir = ROOT / "packs" / "inkling-2-mini-sq-10" / "tokenizer"
             return {
                 "pack": pack_name,
                 "model_key": meta["key"],
@@ -212,11 +246,10 @@ def detect_installed_model() -> dict:
                 "bytes": meta["bytes"],
                 "sha": meta["sha"],
                 "match_pct": meta["match_pct"],
-                "tokenizer_dir": tok_dir,
+                "tokenizer_dir": _resolve_tokenizer_dir(meta["key"]),
                 "ok": True,
             }
-    # Fallback default before installation finishes
-    fallback = "SQ-15" if IS_MAC else "SQ-10"
+    fallback = "SQ-10"
     meta = PACK_CATALOG[fallback]
     return {
         "pack": fallback,
@@ -225,7 +258,7 @@ def detect_installed_model() -> dict:
         "bytes": meta["bytes"],
         "sha": meta["sha"],
         "match_pct": meta["match_pct"],
-        "tokenizer_dir": ROOT / "packs" / meta["key"] / "tokenizer",
+        "tokenizer_dir": _resolve_tokenizer_dir(meta["key"]),
         "ok": False,
     }
 
@@ -410,8 +443,8 @@ def _read_active_config_defaults() -> dict:
 
 def get_status() -> dict:
     hw = _detect_hardware_static()
-    mdl = detect_installed_model()
     st, proc = _find_alive_server()
+    mdl = detect_installed_model(preferred_pack=(st or {}).get("pack"))
     defaults = _read_active_config_defaults()
     port = int((st or {}).get("port") or defaults["port"])
     mode = (st or {}).get("mode") or defaults["mode"]
@@ -452,6 +485,7 @@ def get_status() -> dict:
     return {
         "state": state_str,
         "pid": proc.pid if proc else None,
+        "pack": mdl["pack"],
         "mode": mode,
         "port": port,
         "context": context,
@@ -497,6 +531,7 @@ def get_status() -> dict:
             "model_sha": mdl["sha"],
             "model_match_pct": mdl["match_pct"],
             "model_size_gb": round(mdl["bytes"] / 1e9, 2),
+            "installed_packs": list_installed_packs(),
             "engine_ok": engine_ok,
             "engine_version": f"strata-inkling 0.1.66 ({hw['backend'].upper()})",
         },
@@ -512,7 +547,8 @@ def start_model(params: dict) -> dict:
             return {"ok": True, "already_running": True, "status": get_status()}
 
         hw = _detect_hardware_static()
-        mdl = detect_installed_model()
+        req_pack = str(params.get("pack") or "").upper().strip() or None
+        mdl = detect_installed_model(preferred_pack=req_pack)
 
         mode = str(params.get("mode") or hw["recommended_mode"]).lower()
         if mode not in ("fast", "dspark"):
@@ -541,9 +577,15 @@ def start_model(params: dict) -> dict:
 
         if _port_open(port):
             return {"ok": False, "error": f"連接埠 {port} 已被其他程式佔用，請先停止該程式或更換埠號。"}
-        if not mdl["ok"] or not ENGINE_EXE.is_file():
-            hint = "./install-mac.sh" if IS_MAC else "Install.cmd"
-            return {"ok": False, "error": f"找不到模型檔（{mdl['pack']}）或引擎執行檔，請先執行 {hint}。"}
+        if not mdl["ok"] or (req_pack and mdl["pack"] != req_pack) or not ENGINE_EXE.is_file():
+            hint = f"./install-mac.sh --pack {req_pack or mdl['pack']}" if IS_MAC else "Install.cmd"
+            return {"ok": False, "error": f"找不到模型檔（{req_pack or mdl['pack']}）或引擎執行檔，請先執行 {hint}。"}
+
+        # Persist selected pack as default for GUI & Gateway auto-wake
+        if _GATEWAY_REF:
+            _GATEWAY_REF[0].update_config({"default_pack": mdl["pack"]}, restart_if_running=False)
+        else:
+            save_gateway_config({**load_gateway_config(), "default_pack": mdl["pack"]})
 
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         draft_arg = "dspark" if mode == "dspark" else "off"
@@ -845,7 +887,10 @@ class GuiHandler(BaseHTTPRequestHandler):
         if p == "/api/open_chat":
             st = get_status()
             url = st["endpoints"]["chat_ui"]
-            webbrowser.open(url)
+            if IS_MAC:
+                subprocess.Popen(["open", "-a", "Safari", url], start_new_session=True)
+            else:
+                webbrowser.open(url)
             return self._send_json({"ok": True, "url": url})
         if p == "/api/open_folder":
             body = self._read_body_json()
@@ -976,27 +1021,7 @@ def open_app_window(url: str) -> None:
                 )
                 return
     elif IS_MAC:
-        candidates = [
-            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-            Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
-            Path("/Applications/Arc.app/Contents/MacOS/Arc"),
-        ]
-        for browser in candidates:
-            if browser.is_file():
-                subprocess.Popen(
-                    [
-                        str(browser),
-                        f"--app={url}",
-                        f"--user-data-dir={profile_dir}",
-                        "--window-size=1260,860",
-                        "--no-first-run",
-                        "--no-default-browser-check",
-                    ],
-                    start_new_session=True,
-                )
-                return
-        subprocess.Popen(["open", url], start_new_session=True)
+        subprocess.Popen(["open", "-a", "Safari", url], start_new_session=True)
         return
     webbrowser.open(url)
 

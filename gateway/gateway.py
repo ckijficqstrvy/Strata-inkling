@@ -46,6 +46,7 @@ DEFAULT_GATEWAY_CONFIG = {
     "api_key": "",            # Optional; recommended when host == "0.0.0.0"
     "auto_wake": True,        # Auto-start Strata engine when an external Agent calls
     "idle_unload_min": 0,     # 0 = never auto-unload; >0 = unload model after N idle minutes
+    "default_pack": "SQ-10",
     "default_mode": _mac_default_mode(),
     "default_context": 32768,
     "default_kv": "fp8" if sys.platform == "darwin" else "k8v8",
@@ -53,7 +54,7 @@ DEFAULT_GATEWAY_CONFIG = {
     "backend_port": 8081,
 }
 
-MODEL_PRIMARY = "inkling-2-mini-sq-15" if sys.platform == "darwin" else "inkling-2-mini-sq-10"
+MODEL_PRIMARY = "inkling-2-mini-sq-10"
 MODEL_ALIASES = [
     "inkling-2-mini-sq-10",
     "inkling-2-mini-sq-15",
@@ -63,12 +64,8 @@ MODEL_ALIASES = [
     "inkling",
     "strata",
 ]
-MODEL_BYTES = 14_348_316_672 if sys.platform == "darwin" else 10_471_526_400
-MODEL_DIGEST = (
-    "2ea32eed533afba257e2cbee7b073dc2c3da80fe55d1d2d794779b5498e30737"
-    if sys.platform == "darwin"
-    else "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934"
-)
+MODEL_BYTES = 10_471_526_400
+MODEL_DIGEST = "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934"
 
 
 def load_gateway_config() -> dict:
@@ -432,6 +429,7 @@ class AgentGatewayManager:
             auto_woke = False
             if st.get("state") == "stopped":
                 res = self.start_model_fn({
+                    "pack": self.config.get("default_pack", "SQ-10"),
                     "mode": self.config.get("default_mode", DEFAULT_GATEWAY_CONFIG["default_mode"]),
                     "context": int(self.config.get("default_context") or 32768),
                     "kv": self.config.get("default_kv", DEFAULT_GATEWAY_CONFIG["default_kv"]),
@@ -617,7 +615,7 @@ class _GatewayHTTPHandler(BaseHTTPRequestHandler):
         if st is None:
             st = self.mgr.cached_model_status(max_age_s=3.0)
         files = st.get("files") or {}
-        pack = files.get("model_pack") or ("SQ-15" if sys.platform == "darwin" else "SQ-10")
+        pack = files.get("model_pack") or self.mgr.config.get("default_pack") or "SQ-10"
         key = files.get("model_key") or MODEL_PRIMARY
         nbytes = int(files.get("model_bytes") or MODEL_BYTES)
         sha = str(files.get("model_sha") or MODEL_DIGEST)

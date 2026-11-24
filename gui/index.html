@@ -846,7 +846,16 @@
           </div>
         </div>
 
-        <div class="form-grid" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
+        <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+          <div class="field">
+            <label for="selPack">模型量化包（Model Pack）</label>
+            <select id="selPack" onchange="onPackChange()">
+              <option value="SQ-10" selected>SQ-10（10.47 GB · 極速省記憶體）</option>
+              <option value="SQ-15">SQ-15（14.35 GB · 高精度 96.68%）</option>
+              <option value="SQ-20">SQ-20（19.35 GB · 無損 100%）</option>
+            </select>
+            <div id="packHint" class="field-hint">可自由切換已安裝的量化包（停止模型後切換，下次啟動生效）。</div>
+          </div>
           <div class="field">
             <label for="selContext">最大上下文長度（Context）</label>
             <select id="selContext">
@@ -1257,8 +1266,41 @@ print(resp.choices[0].message.content)</pre>
       return `${h} 小時 ${m % 60} 分`;
     }
 
+    function onPackChange() {
+      const packEl = document.getElementById("selPack");
+      if (!packEl) return;
+      const p = packEl.value;
+      const isMac = !!(currentStatus && currentStatus.platform && currentStatus.platform.is_mac);
+      if (isMac) {
+        updateMacMetricsForPack(p);
+      }
+    }
+
+    function updateMacMetricsForPack(packName) {
+      const is10 = packName === "SQ-10";
+      document.getElementById("metricSpeed").textContent = is10 ? "27.6–29.5 tok/s" : "24.9–26.2 tok/s";
+      document.getElementById("metricSpeedSub").textContent = is10
+        ? "省 3.61 GiB 記憶體 · DSpark 數學 31.5 / 程式 33.4 tok/s"
+        : "精度 96.68% · 低溫 DSpark 英文寫程式可飆 39.9 tok/s";
+      document.getElementById("fastSpeed").innerHTML = is10
+        ? `27.6 – 29.5 tok/s <span>（平均 28.1 tok/s · 8K 解碼 25.9 tok/s）</span>`
+        : `24.9 – 26.2 tok/s <span>（8K 長文 Prefill 438.8 p/s · Decode 22.7–25.2 tok/s）</span>`;
+      document.getElementById("fastList").innerHTML = is10
+        ? `
+          <li><strong>最適合情境</strong>：邊開瀏覽器邊跑模型、日常繁中對話、寫程式與 8K 長文（平均比 SQ-15 快 <strong>+14.4%</strong>）。</li>
+          <li><strong>超省統一記憶體</strong>：總配置僅 <strong>11.93 GiB</strong>（比 SQ-15 省下 <strong>3.61 GiB</strong>），24 GB Mac 幾乎不觸發 Swap。</li>
+          <li><strong>極速零拷貝載入</strong>：約 0.8 秒完成載入（<code>TotalAlloc 11.93 GiB</code>，穩居 Metal 上限內）。</li>`
+        : `
+          <li><strong>最適合情境</strong>：高精準度演算法寫碼（嚴守複雜度與格式指令）、繁體中文與長文件（96.68% Top-1 一致率）。</li>
+          <li><strong>為何關閉 DSpark 更快</strong>：基礎版 M5 跑繁中／長文時 DSpark 接受率僅 4–10%，關閉 DSpark 改純解碼並搭配 <code>--chunk 1024</code> 可從 8.9 飆升至 25+ tok/s。</li>
+          <li><strong>極速零拷貝載入</strong>：約 0.8–0.9 秒完成載入（<code>TotalAlloc 15.0–15.5 GiB</code>，穩居 Metal 上限內）。</li>`;
+      document.getElementById("ctxHint").textContent = is10
+        ? "24 GB 統一記憶體跑 SQ-10：32K 總佔僅 ~11.93 GiB，可輕鬆同時多工開 App。"
+        : "24 GB 統一記憶體跑 SQ-15：32K 總佔 ~15.54 GiB，16K 僅 ~15.04 GiB（建議關閉高耗 RAM 瀏覽器）。";
+    }
+
     function updateEndpointLabels(port, modelKey) {
-      const mid = modelKey || (currentStatus && currentStatus.files && currentStatus.files.model_key) || "inkling-2-mini-sq-15";
+      const mid = modelKey || (currentStatus && currentStatus.files && currentStatus.files.model_key) || "inkling-2-mini-sq-10";
       document.getElementById("activeEndpointHint").textContent = `端點：http://127.0.0.1:${port}`;
       document.getElementById("epChat").textContent = `http://127.0.0.1:${port}`;
       document.getElementById("epOpenAI").textContent = `http://127.0.0.1:${port}/v1`;
@@ -1282,7 +1324,7 @@ print(resp.choices[0].message.content)`;
         const st = await r.json();
         currentStatus = st;
         const isMac = !!(st.platform && st.platform.is_mac);
-        const packName = (st.files && st.files.model_pack) || (isMac ? "SQ-15" : "SQ-10");
+        const packName = (st.files && st.files.model_pack) || "SQ-10";
         const gpuName = (st.hardware && st.hardware.gpu_name) || (isMac ? "Apple Silicon" : "GPU");
 
         const pill = document.getElementById("statusPill");
@@ -1329,8 +1371,42 @@ print(resp.choices[0].message.content)`;
           document.getElementById("brandSubtitle").textContent =
             `${st.hardware.gpu_name}（${st.hardware.memory_label} · ${st.hardware.gpu_arch}）專屬調校環境`;
         }
+        const packSel = document.getElementById("selPack");
+        if (packSel && st.files && Array.isArray(st.files.installed_packs)) {
+          const prevVal = packSel.value;
+          const descMap = {
+            "SQ-10": "極速省記憶體 · 28.1 tok/s · 11.9 GiB",
+            "SQ-15": "高精度 96.68% · 24.5 tok/s · 15.5 GiB",
+            "SQ-20": "無損 100% · 19.35 GB"
+          };
+          const sig = st.files.installed_packs.map(p => `${p.pack}:${p.installed ? 1 : 0}`).join(",");
+          if (packSel.dataset.sig !== sig) {
+            packSel.dataset.sig = sig;
+            packSel.innerHTML = st.files.installed_packs.map(p => {
+              const label = `${p.pack}（${p.size_gb} GB · ${descMap[p.pack] || p.match_pct}${p.installed ? "" : " · 未安裝"}）`;
+              return `<option value="${p.pack}" ${p.installed ? "" : "disabled"}>${label}</option>`;
+            }).join("");
+            if (prevVal && [...packSel.options].some(o => o.value === prevVal && !o.disabled)) {
+              packSel.value = prevVal;
+            }
+          }
+          packSel.disabled = (st.state !== "stopped");
+          const pHint = document.getElementById("packHint");
+          if (pHint) {
+            pHint.textContent = st.state === "stopped"
+              ? "可自由切換已安裝的量化包（亦會同步為 Agent 閘道自動喚醒預設）。"
+              : "模型運行中；若要切換量化包，請先點擊上方「停止並釋放記憶體」。";
+          }
+          if (st.state !== "stopped" && st.files.model_pack) {
+            packSel.value = st.files.model_pack;
+          }
+        }
+
         if (!platformInit && st.platform) {
           platformInit = true;
+          if (packSel && st.files && st.files.model_pack) {
+            packSel.value = st.files.model_pack;
+          }
           selectMode(st.platform.recommended_mode || "fast");
           document.getElementById("selKv").value = st.platform.default_kv || "k8v8";
           if (st.platform.default_chunk) {
@@ -1339,49 +1415,42 @@ print(resp.choices[0].message.content)`;
           if (st.platform.is_mac) {
             document.title = `Strata Inkling-2-Mini 控制台 · ${gpuName} Metal 4 調校版`;
             document.getElementById("btnStop").textContent = "■ 停止並釋放記憶體";
-            document.getElementById("metricSpeed").textContent = "25.1–26.2 tok/s";
-            document.getElementById("metricSpeedSub").textContent = "低溫 DSpark 英文寫程式可飆 39.9 tok/s";
+            updateMacMetricsForPack(packName);
             document.getElementById("controlPanelDesc").textContent =
-              `已針對本機 ${gpuName}（${st.hardware.memory_label} · Metal 4 MPP 神經加速器）完成多輪實測，提供以下兩組最佳化模式：`;
-            document.getElementById("fastSpeed").innerHTML = `25.1 – 26.2 tok/s <span>（8K 長文 Prefill 437–474 p/s · Decode 25.2 tok/s）</span>`;
-            document.getElementById("fastList").innerHTML = `
-              <li><strong>最適合情境</strong>：繁體中文對話、日常問答、翻譯寫作、8K–32K 長文件摘要與 <code>temperature = 1.0</code> 全能使用。</li>
-              <li><strong>為何比原版 Mac 預設快近 3 倍</strong>：基礎版 M5 跑繁中／長文時 DSpark 接受率僅 4–10%，關閉 DSpark 改純解碼並搭配 <code>--chunk 1024</code> 可從 8.9 飆升至 25.1+ tok/s，並再省 190 MiB 記憶體。</li>
-              <li><strong>極速零拷貝載入</strong>：約 0.9 秒完成載入（<code>TotalAlloc 15.0–15.5 GiB</code>，穩居 Metal 上限內）。</li>`;
+              `已針對本機 ${gpuName}（${st.hardware.memory_label} · Metal 4 MPP 神經加速器）完成 SQ-10 與 SQ-15 同場實測，可依需求切換模式與量化包：`;
             document.getElementById("fastMeta").innerHTML = `參數：<code>--kv fp8 --draft off --chunk 1024 --max-context 32768</code> · Metal Keep-Alive 10 分鐘`;
-            document.getElementById("dsparkSpeed").innerHTML = `38.1 – 39.9 tok/s <span>（低溫英文程式碼 / 數學步驟推導）</span>`;
+            document.getElementById("dsparkSpeed").innerHTML = `33.4 – 39.9 tok/s <span>（低溫英文程式碼 / 數學步驟推導）</span>`;
             document.getElementById("dsparkList").innerHTML = `
-              <li><strong>最適合情境</strong>：低溫（<code>temperature ≤ 0.2</code>）英文程式碼補全、JSON/YAML 結構化輸出、英文數學推導（接受率 61–70%）。</li>
-              <li><strong>使用須知</strong>：繁體中文與長文接受率低時會降到 ~9–11 tok/s；日常中英混合請選「極速全能模式」。</li>
-              <li><strong>啟動時間</strong>：約 1.5 秒載入（含內建 DSpark 草稿層與 Metal 4 MPP 核心）。</li>`;
+              <li><strong>最適合情境</strong>：低溫（<code>temperature ≤ 0.2</code>）英文程式碼補全、JSON/YAML 結構化輸出、英文數學推導（SQ-10 數學 <strong>31.5 tok/s</strong> / SQ-15 寫碼最高 <strong>39.9 tok/s</strong>）。</li>
+              <li><strong>使用須知</strong>：繁體中文與長文接受率低時會降到 ~8.3–11.6 tok/s；日常中英混合請選「極速全能模式」。</li>
+              <li><strong>啟動時間</strong>：約 1.3–1.5 秒載入（含內建 DSpark 草稿層與 Metal 4 MPP 核心）。</li>`;
             document.getElementById("dsparkMeta").innerHTML = `參數：<code>--kv fp8 --draft dspark --chunk 1024 --max-context 16384/32768</code> · 預設溫度 0.2`;
             document.getElementById("kvHint").innerHTML =
               "Apple Metal 引擎原生以高效 <code>FP16</code> 配置 KV 快取（32K 佔 1.16 GiB、16K 僅佔 0.66 GiB），24 GB 機型切 16K 可多釋放 512 MiB 餘裕。";
-            document.getElementById("ctxHint").textContent = "24 GB 統一記憶體跑 SQ-15：32K 總佔 ~15.5 GiB，16K 僅 ~15.0 GiB（Prefill 最高可達 474 p/s）。";
-            document.getElementById("benchPanelTitle").textContent = `${gpuName} 本機實測調校成果（${packName} · Metal 4 MPP）`;
+            document.getElementById("benchPanelTitle").textContent = `${gpuName} 本機同場實測成果（SQ-10 vs SQ-15 · Metal 4 MPP）`;
             document.getElementById("benchRows").innerHTML = `
               <div class="bench-row">
-                <div><strong>🚀 低溫 DSpark + chunk 1024（英文寫程式）</strong></div>
+                <div><strong>🚀 SQ-15 低溫 DSpark（16K 英文寫程式）</strong></div>
                 <div class="bench-track"><div class="bench-fill indigo" style="width: 100%;"></div></div>
                 <div class="bench-val" style="color: #818cf8;">39.9 tok/s</div>
               </div>
               <div class="bench-row">
-                <div><strong>🏆 極速全能（draft off + chunk 1024 · 繁中）</strong></div>
-                <div class="bench-track"><div class="bench-fill" style="width: 66%;"></div></div>
-                <div class="bench-val" style="color: #34d399;">26.2 tok/s</div>
+                <div><strong>🏆 SQ-10 極速全能（5 項平均 · 11.9 GiB）</strong></div>
+                <div class="bench-track"><div class="bench-fill" style="width: 70%;"></div></div>
+                <div class="bench-val" style="color: #34d399;">28.1 tok/s</div>
               </div>
               <div class="bench-row">
-                <div><strong>🏆 極速全能（8K 長文解碼 · 7,935 tok）</strong></div>
-                <div class="bench-track"><div class="bench-fill" style="width: 63%;"></div></div>
-                <div class="bench-val" style="color: #34d399;">25.2 tok/s</div>
+                <div><strong>🏆 SQ-15 極速全能（5 項平均 · 15.5 GiB）</strong></div>
+                <div class="bench-track"><div class="bench-fill" style="width: 61%;"></div></div>
+                <div class="bench-val" style="color: #34d399;">24.5 tok/s</div>
               </div>
               <div class="bench-row">
-                <div>原版 Mac 預設（DSpark · 8K 長文解碼）</div>
+                <div>原版 Mac 預設（SQ-15 + DSpark · 8K 長文）</div>
                 <div class="bench-track"><div class="bench-fill muted" style="width: 25%;"></div></div>
                 <div class="bench-val">10.1 tok/s</div>
               </div>
               <div class="bench-row">
-                <div>原版 Mac 預設（DSpark · 繁中日常對話）</div>
+                <div>原版 Mac 預設（SQ-15 + DSpark · 繁中日常）</div>
                 <div class="bench-track"><div class="bench-fill muted" style="width: 22%;"></div></div>
                 <div class="bench-val">8.9 tok/s</div>
               </div>`;
@@ -1418,6 +1487,7 @@ print(resp.choices[0].message.content)`;
       btn.disabled = true;
       const isMac = !!(currentStatus && currentStatus.platform && currentStatus.platform.is_mac);
       const body = {
+        pack: (document.getElementById("selPack") && document.getElementById("selPack").value) || "SQ-10",
         mode: selectedMode,
         context: parseInt(document.getElementById("selContext").value, 10),
         kv: document.getElementById("selKv").value,
@@ -1640,6 +1710,7 @@ print(resp.choices[0].message.content)`;
         idle_unload_min: parseInt(document.getElementById("gwIdle").value, 10) || 0,
         auto_wake: document.getElementById("gwAutoWake").checked,
         api_key: document.getElementById("gwApiKey").value.trim(),
+        default_pack: (document.getElementById("selPack") && document.getElementById("selPack").value) || "SQ-10",
         default_mode: selectedMode,
         default_context: parseInt(document.getElementById("selContext").value, 10) || 32768,
         default_kv: document.getElementById("selKv").value || "fp8",
