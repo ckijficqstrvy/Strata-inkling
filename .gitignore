@@ -9,9 +9,10 @@ packs/
 logs/
 gui/.app-profile/
 
-# Machine-specific generated configs and Windows shortcuts
+# Machine-specific generated configs (may contain local paths or API key) and shortcuts
 strata-inkling-sq10.json
 strata-inkling-sq10-dspark.json
+gateway-config.json
 *.bak
 *.lnk
 

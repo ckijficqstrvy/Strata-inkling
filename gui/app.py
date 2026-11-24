@@ -21,6 +21,9 @@ import psutil
 
 ROOT = Path(__file__).resolve().parent.parent
 GUI_DIR = ROOT / "gui"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from gateway.gateway import AgentGatewayManager  # noqa: E402
 CONTROL_DIR = ROOT / "control"
 PYTHON_EXE = CONTROL_DIR / "python" / "python.exe"
 PYTHONW_EXE = CONTROL_DIR / "python" / "pythonw.exe"
@@ -39,6 +42,13 @@ CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 _LOCK = threading.Lock()
 _CONFLICT_CACHE = {"ts": 0.0, "data": []}
 _HTTPD_REF: list[ThreadingHTTPServer] = []
+_GATEWAY_REF: list[AgentGatewayManager] = []
+
+
+def _get_gateway() -> AgentGatewayManager:
+    if not _GATEWAY_REF:
+        _GATEWAY_REF.append(AgentGatewayManager(get_status, start_model, stop_model))
+    return _GATEWAY_REF[0]
 
 
 def _port_open(port: int) -> bool:
@@ -213,6 +223,7 @@ def get_status() -> dict:
             "engine_ok": engine_ok,
             "engine_version": "strata-inkling 0.1.66 (Strata v0.2.20)",
         },
+        "gateway": _GATEWAY_REF[0].status() if _GATEWAY_REF else None,
         "warnings": _check_conflicts(port),
     }
 
@@ -462,6 +473,10 @@ class GuiHandler(BaseHTTPRequestHandler):
             return self._send_json({"ok": True, "app": "strata-inkling-gui", "pid": os.getpid()})
         if p == "/api/status":
             return self._send_json(get_status())
+        if p == "/api/gateway/status":
+            return self._send_json({"ok": True, "gateway": _get_gateway().status()})
+        if p == "/api/gateway/requests":
+            return self._send_json({"ok": True, "requests": _get_gateway().recent_requests()})
         if p == "/api/logs":
             qs = urllib.parse.parse_qs(parsed.query)
             kind = (qs.get("kind") or ["engine"])[0]
@@ -477,6 +492,20 @@ class GuiHandler(BaseHTTPRequestHandler):
             return self._send_json(start_model(body))
         if p == "/api/stop":
             return self._send_json(stop_model())
+        if p == "/api/gateway/start":
+            body = self._read_body_json()
+            gw = _get_gateway()
+            if body:
+                body["enabled"] = True
+            return self._send_json(gw.start(body or {"enabled": True}))
+        if p == "/api/gateway/stop":
+            gw = _get_gateway()
+            gw.update_config({"enabled": False}, restart_if_running=False)
+            return self._send_json(gw.stop())
+        if p == "/api/gateway/config":
+            body = self._read_body_json()
+            gw = _get_gateway()
+            return self._send_json(gw.update_config(body, restart_if_running=True))
         if p == "/api/open_chat":
             st = get_status()
             url = st["endpoints"]["chat_ui"]
@@ -610,12 +639,16 @@ def open_app_window(url: str) -> None:
 def run_server() -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     psutil.cpu_percent(interval=None)
+    gw = _get_gateway()
+    if gw.config.get("enabled", True):
+        gw.start()
     httpd = ThreadingHTTPServer((GUI_HOST, GUI_PORT), GuiHandler)
     _HTTPD_REF.append(httpd)
     GUI_STATE_FILE.write_text(json.dumps({"pid": os.getpid(), "port": GUI_PORT}), encoding="utf-8")
     try:
         httpd.serve_forever()
     finally:
+        gw.stop()
         httpd.server_close()
         if GUI_STATE_FILE.is_file():
             try:

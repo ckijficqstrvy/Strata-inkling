@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "host": "127.0.0.1",
+  "port": 11435,
+  "api_key": "",
+  "auto_wake": true,
+  "idle_unload_min": 0,
+  "default_mode": "fast",
+  "default_context": 32768,
+  "default_kv": "k8v8",
+  "backend_port": 8081
+}

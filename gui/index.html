@@ -630,6 +630,50 @@
       color: #7dd3fc;
       word-break: break-all;
     }
+    .req-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.4px;
+    }
+    .req-table th, .req-table td {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    }
+    .req-table th {
+      color: var(--text-muted);
+      font-weight: 600;
+      background: rgba(15, 23, 42, 0.6);
+    }
+    .proto-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(56, 189, 248, 0.16);
+      color: #7dd3fc;
+    }
+    .proto-badge.ollama { background: rgba(52, 211, 153, 0.16); color: #6ee7b7; }
+    .proto-badge.anthropic { background: rgba(251, 191, 36, 0.16); color: #fde68a; }
+    .proto-badge.system { background: rgba(148, 163, 184, 0.16); color: #cbd5e1; }
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 14px;
+      border-radius: 11px;
+      background: #0b1224;
+      border: 1px solid var(--border);
+      margin-bottom: 10px;
+    }
+    .switch-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: #38bdf8;
+      cursor: pointer;
+    }
     pre.code-block {
       margin: 10px 0 0;
       padding: 13px 15px;
@@ -704,6 +748,10 @@
         </div>
       </div>
       <div class="top-actions">
+        <div id="gwTopPill" class="status-pill stopped" style="cursor:pointer;" onclick="switchTab('gateway')" title="點擊前往開放 Agent 接口設定">
+          <span class="status-dot"></span>
+          <span id="gwTopText">Agent 閘道：—</span>
+        </div>
         <div id="statusPill" class="status-pill stopped">
           <span class="status-dot"></span>
           <span id="statusText">已停止</span>
@@ -756,8 +804,9 @@
     <!-- Navigation Tabs -->
     <nav class="tabs">
       <button class="tab-btn active" data-tab="control" onclick="switchTab('control')">🎛️ 模式與調校</button>
-      <button class="tab-btn" data-tab="playground" onclick="switchTab('playground')">💬 快速對話 &amp; 即時測速</button>
-      <button class="tab-btn" data-tab="guide" onclick="switchTab('guide')">📖 使用情境與外部串接</button>
+      <button class="tab-btn" data-tab="gateway" onclick="switchTab('gateway')">🌐 開放 Agent 接口</button>
+      <button class="tab-btn" data-tab="playground" onclick="switchTab('playground')">💬 快速對話 &amp; 測速</button>
+      <button class="tab-btn" data-tab="guide" onclick="switchTab('guide')">📖 使用情境與指南</button>
       <button class="tab-btn" data-tab="logs" onclick="switchTab('logs')">📋 即時日誌</button>
     </nav>
 
@@ -854,6 +903,127 @@
             <div class="bench-track"><div class="bench-fill muted" style="width: 45%;"></div></div>
             <div class="bench-val">14.4 tok/s</div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 1.5: Open Agent Gateway (LM Studio / Ollama / OpenAI / Anthropic) -->
+    <div id="tab-gateway" class="tab-panel">
+      <div class="panel">
+        <div class="panel-title">
+          <span>🌐 開放 Agent API 閘道（同時相容 OpenAI · Ollama · LM Studio · Anthropic）</span>
+          <div class="action-group">
+            <button id="btnGwStart" class="btn btn-sm btn-primary" onclick="startGateway()">▶ 開啟開放接口</button>
+            <button id="btnGwStop" class="btn btn-sm btn-danger" onclick="stopGateway()">■ 關閉開放接口</button>
+          </div>
+        </div>
+        <p class="panel-desc">像 <strong>LM Studio Local Server</strong> 與 <strong>Ollama</strong> 一樣在單一埠口（預設 <code>11435</code>，不與 Ollama 11434 / LM Studio 1234 衝突）對外開放標準 API，讓 Cline、Roo Code、Claude Code、Open WebUI、Cherry Studio、Continue、LangChain、CrewAI、n8n、Dify 等外部 Agent 直接無縫接入，並支援<strong>請求自動喚醒載入</strong>與<strong>閒置自動釋放顯存</strong>。</p>
+
+        <div id="gwLanWarn" class="warn-banner" style="display:none; margin-bottom:12px;">
+          <div style="font-size:17px;">🔐</div>
+          <div><strong>目前開放區網 / Tailscale 連線但尚未設定 API Key</strong>建議於下方填寫或產生一組 API Key，避免區網內其他裝置未經授權呼叫您的 GPU。</div>
+        </div>
+
+        <div class="form-grid" style="margin-bottom: 12px;">
+          <div class="field">
+            <label for="gwHost">網路存取範圍</label>
+            <select id="gwHost">
+              <option value="127.0.0.1">僅本機（127.0.0.1 · 最安全）</option>
+              <option value="0.0.0.0">開放區網 / Tailscale（0.0.0.0 · 跨電腦 Agent 連線）</option>
+            </select>
+            <div class="field-hint">開放後，您的 MacBook / 手機 / 區網伺服器都能直接呼叫本機 RX 6700 XT。</div>
+          </div>
+          <div class="field">
+            <label for="gwPort">開放閘道連接埠</label>
+            <input id="gwPort" type="number" min="1024" max="65535" value="11435" />
+            <div class="field-hint">預設 11435（自動避開 Ollama 11434 與 LM Studio 1234）。</div>
+          </div>
+          <div class="field">
+            <label for="gwIdle">閒置自動釋放顯存</label>
+            <select id="gwIdle">
+              <option value="0">永不自動卸載（保持常駐）</option>
+              <option value="10">閒置 10 分鐘後自動釋放 12 GB VRAM</option>
+              <option value="30">閒置 30 分鐘後自動釋放 12 GB VRAM</option>
+              <option value="60">閒置 60 分鐘後自動釋放 12 GB VRAM</option>
+            </select>
+            <div class="field-hint">搭配「自動喚醒」使用，平時 0 顯存佔用、Agent 呼叫時 8 秒自動載入！</div>
+          </div>
+        </div>
+
+        <div class="switch-row">
+          <div>
+            <strong style="font-size:13.2px;">⚡ 收到外部 Agent 請求時自動喚醒模型（JIT 隨需載入，像 Ollama / LM Studio）</strong>
+            <div style="font-size:12px; color:var(--text-muted);">即使模型尚未手動啟動，外部 Agent 一發送請求就會自動載入 SQ-10（約 8 秒）並無縫回傳結果。</div>
+          </div>
+          <input id="gwAutoWake" type="checkbox" checked />
+        </div>
+
+        <div class="copy-row" style="grid-template-columns: 165px 1fr auto auto; margin-bottom: 12px;">
+          <span class="lbl">API Key 保護（選填）</span>
+          <input id="gwApiKey" type="text" placeholder="留空表示免驗證（僅限本機建議留空；開放區網建議設定）" style="padding:7px 10px; border-radius:8px; border:1px solid var(--border); background:#060b16; color:var(--text); font-family:Consolas,monospace; font-size:12.5px;" />
+          <button class="btn btn-sm" onclick="genApiKey()">🎲 隨機產生</button>
+          <button class="btn btn-sm btn-primary" onclick="saveGatewayConfig()">💾 套用設定</button>
+        </div>
+
+        <div id="gwLanListBox" style="display:none; padding:10px 14px; border-radius:10px; background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.3); margin-bottom:14px; font-size:12.8px;">
+          <strong style="color:#6ee7b7;">🌍 區網 / Tailscale 可連線位址：</strong>
+          <div id="gwLanList" style="margin-top:4px; font-family:Consolas,monospace; color:#a7f3d0;"></div>
+        </div>
+
+        <h3 style="margin: 14px 0 8px; font-size: 14px;">外部 Agent 串接端點（點擊即可複製）</h3>
+        <div class="copy-grid">
+          <div class="copy-row">
+            <span class="lbl">OpenAI / LM Studio 端點</span>
+            <code id="gwEpOpenAI">http://127.0.0.1:11435/v1</code>
+            <button class="btn btn-sm" onclick="copyById('gwEpOpenAI')">複製</button>
+          </div>
+          <div class="copy-row">
+            <span class="lbl">Ollama 相容端點</span>
+            <code id="gwEpOllama">http://127.0.0.1:11435</code>
+            <button class="btn btn-sm" onclick="copyById('gwEpOllama')">複製</button>
+          </div>
+          <div class="copy-row">
+            <span class="lbl">Anthropic / Claude Code</span>
+            <code id="gwEpAnthropic">http://127.0.0.1:11435</code>
+            <button class="btn btn-sm" onclick="copyById('gwEpAnthropic')">複製</button>
+          </div>
+          <div class="copy-row">
+            <span class="lbl">LM Studio 原生清單</span>
+            <code id="gwEpLms">http://127.0.0.1:11435/api/v0/models</code>
+            <button class="btn btn-sm" onclick="copyById('gwEpLms')">複製</button>
+          </div>
+          <div class="copy-row">
+            <span class="lbl">推薦模型名稱</span>
+            <code id="gwEpModel">inkling-2-mini-sq-10</code>
+            <button class="btn btn-sm" onclick="copyById('gwEpModel')">複製</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span>📡 即時 Agent 請求監控（類似 LM Studio Developer Log）</span>
+          <span id="gwStatsHint" style="font-size:12px; color:var(--text-muted); font-weight:500;">總請求數：0</span>
+        </div>
+        <p class="panel-desc">外部 Agent 透過 OpenAI、Ollama、LM Studio 或 Anthropic 協定呼叫本機時，會即時記錄於此：</p>
+        <div style="overflow-x:auto; max-height:290px; overflow-y:auto; border:1px solid var(--border); border-radius:11px;">
+          <table class="req-table">
+            <thead>
+              <tr>
+                <th>時間</th>
+                <th>協定</th>
+                <th>端點</th>
+                <th>來源</th>
+                <th>狀態</th>
+                <th>Tokens (入/出)</th>
+                <th>出字速度</th>
+                <th>耗時</th>
+              </tr>
+            </thead>
+            <tbody id="gwReqBody">
+              <tr><td colspan="8" style="text-align:center; color:var(--text-dim); padding:18px;">尚無外部 Agent 請求紀錄</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -1036,6 +1206,7 @@ print(resp.choices[0].message.content)</pre>
     let currentStatus = null;
     let currentLogKind = "engine";
     let streamingAbort = false;
+    let gwFormInit = false;
 
     const PRESETS = {
       zh: "請用繁體中文詳細說明 Mixture of Experts（MoE）與 KV Cache 量化（k8v8）如何讓 26B 模型順暢跑在 12 GB 顯卡上，約 150 字。",
@@ -1056,6 +1227,7 @@ print(resp.choices[0].message.content)</pre>
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
       document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + name));
       if (name === "logs") refreshLogs();
+      if (name === "gateway") refreshGatewayRequests();
     }
 
     function selectMode(mode) {
@@ -1135,6 +1307,7 @@ print(resp.choices[0].message.content)`;
         document.getElementById("btnQuickBench").disabled = (st.state !== "running");
 
         updateEndpointLabels(st.port);
+        if (st.gateway) updateGatewayUI(st.gateway);
 
         // Warnings
         const wStack = document.getElementById("warningStack");
@@ -1331,12 +1504,131 @@ print(resp.choices[0].message.content)`;
       }
     }
 
+    function updateGatewayUI(gw) {
+      const pill = document.getElementById("gwTopPill");
+      const txt = document.getElementById("gwTopText");
+      pill.className = "status-pill " + (gw.running ? "running" : "stopped");
+      txt.textContent = gw.running ? `Agent 閘道 :${gw.port} 開啟` : "Agent 閘道：未開啟";
+
+      document.getElementById("btnGwStart").disabled = gw.running;
+      document.getElementById("btnGwStop").disabled = !gw.running;
+      document.getElementById("gwStatsHint").textContent =
+        `總請求數：${gw.total_requests} · 執行中：${gw.active_requests}` + (gw.running ? ` · 閒置 ${Math.round(gw.idle_s)}s` : "");
+
+      document.getElementById("gwEpOpenAI").textContent = gw.endpoints.openai;
+      document.getElementById("gwEpOllama").textContent = gw.endpoints.ollama;
+      document.getElementById("gwEpAnthropic").textContent = gw.endpoints.anthropic;
+      document.getElementById("gwEpLms").textContent = `${gw.local_base}/api/v0/models`;
+
+      const lanBox = document.getElementById("gwLanListBox");
+      if (gw.lan_enabled && gw.lan_bases && gw.lan_bases.length > 0) {
+        lanBox.style.display = "block";
+        document.getElementById("gwLanList").innerHTML = gw.lan_bases
+          .map(u => `<div>OpenAI: <code>${u}/v1</code> &nbsp;|&nbsp; Ollama / Anthropic: <code>${u}</code></div>`).join("");
+      } else {
+        lanBox.style.display = "none";
+      }
+      document.getElementById("gwLanWarn").style.display = (gw.lan_enabled && !gw.api_key_set) ? "flex" : "none";
+
+      if (!gwFormInit) {
+        gwFormInit = true;
+        document.getElementById("gwHost").value = gw.host || "127.0.0.1";
+        document.getElementById("gwPort").value = gw.port || 11435;
+        document.getElementById("gwIdle").value = String(gw.idle_unload_min || 0);
+        document.getElementById("gwAutoWake").checked = !!gw.auto_wake;
+        document.getElementById("gwApiKey").value = gw.api_key || "";
+      }
+    }
+
+    function collectGatewayForm() {
+      return {
+        host: document.getElementById("gwHost").value,
+        port: parseInt(document.getElementById("gwPort").value, 10) || 11435,
+        idle_unload_min: parseInt(document.getElementById("gwIdle").value, 10) || 0,
+        auto_wake: document.getElementById("gwAutoWake").checked,
+        api_key: document.getElementById("gwApiKey").value.trim(),
+        default_mode: selectedMode,
+        default_context: parseInt(document.getElementById("selContext").value, 10) || 32768,
+        default_kv: document.getElementById("selKv").value || "k8v8",
+        backend_port: parseInt(document.getElementById("inpPort").value, 10) || 8081
+      };
+    }
+
+    async function startGateway() {
+      const r = await fetch("/api/gateway/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collectGatewayForm())
+      });
+      const res = await r.json();
+      if (!res.ok) showToast("開啟閘道失敗：" + res.error);
+      else showToast(`開放 Agent 閘道已在埠 ${res.gateway.port} 啟動！`);
+      await refreshStatus();
+    }
+
+    async function stopGateway() {
+      const r = await fetch("/api/gateway/stop", { method: "POST" });
+      const res = await r.json();
+      if (res.ok) showToast("開放 Agent 閘道已關閉");
+      await refreshStatus();
+    }
+
+    async function saveGatewayConfig() {
+      const r = await fetch("/api/gateway/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collectGatewayForm())
+      });
+      const res = await r.json();
+      if (!res.ok) showToast("套用失敗：" + res.error);
+      else showToast("閘道設定已儲存並即時生效！");
+      await refreshStatus();
+    }
+
+    function genApiKey() {
+      const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+      let key = "sk-inkling-";
+      for (let i = 0; i < 24; i++) key += chars[Math.floor(Math.random() * chars.length)];
+      document.getElementById("gwApiKey").value = key;
+      showToast("已產生新 API Key，請記得點「套用設定」");
+    }
+
+    async function refreshGatewayRequests() {
+      try {
+        const r = await fetch("/api/gateway/requests");
+        const data = await r.json();
+        const body = document.getElementById("gwReqBody");
+        const list = data.requests || [];
+        if (!list.length) {
+          body.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-dim); padding:18px;">尚無外部 Agent 請求紀錄</td></tr>`;
+          return;
+        }
+        body.innerHTML = list.map(item => {
+          const pLow = (item.protocol || "").toLowerCase();
+          const cls = pLow.includes("ollama") ? "ollama" : pLow.includes("anthropic") ? "anthropic" : pLow.includes("system") ? "system" : "";
+          const wakeTag = item.auto_woke ? ` <span style="color:#fde68a;font-size:11px;">⚡喚醒</span>` : "";
+          const stCol = item.status >= 200 && item.status < 300 ? "#34d399" : "#fb7185";
+          return `<tr>
+            <td>${item.time}</td>
+            <td><span class="proto-badge ${cls}">${item.protocol}</span>${wakeTag}</td>
+            <td><code>${item.path}</code></td>
+            <td>${item.client}</td>
+            <td style="color:${stCol};font-weight:700;">${item.status}</td>
+            <td>${item.prompt_tok} / ${item.gen_tok}</td>
+            <td style="color:#38bdf8;font-weight:700;">${item.tps ? item.tps + " t/s" : "—"}</td>
+            <td>${item.elapsed_s}s</td>
+          </tr>`;
+        }).join("");
+      } catch (e) {}
+    }
+
     // Initial load & live polling
     refreshStatus();
     setInterval(refreshStatus, 2000);
     setInterval(() => {
       if (document.getElementById("tab-logs").classList.contains("active")) refreshLogs();
-    }, 3000);
+      if (document.getElementById("tab-gateway").classList.contains("active")) refreshGatewayRequests();
+    }, 2500);
   </script>
 </body>
 </html>
