@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Strata Inkling-2-Mini 控制台 · RX 6700 XT 調校版</title>
+  <title>Strata Inkling-2-Mini 控制台</title>
   <link rel="icon" type="image/png" href="/inkling.png" />
   <style>
     :root {
@@ -814,7 +814,7 @@
     <div id="tab-control" class="tab-panel active">
       <div class="panel">
         <h2 class="panel-title">選擇運行模式（點選卡片即可切換，下次啟動生效）</h2>
-        <p class="panel-desc">已針對本機 RX 6700 XT（RDNA2 無 WMMA 矩陣核心）完成三輪實測，挑選以下兩種最實用的場景模式：</p>
+        <p id="controlPanelDesc" class="panel-desc">已針對本機 RX 6700 XT（RDNA2 無 WMMA 矩陣核心）完成三輪實測，挑選以下兩種最實用的場景模式：</p>
 
         <div class="mode-grid">
           <div id="cardFast" class="mode-card selected" onclick="selectMode('fast')">
@@ -822,13 +822,13 @@
               <div class="mode-title">⚡ 極速全能模式</div>
               <span class="pill-rec">推薦日常預設</span>
             </div>
-            <div class="mode-speed">24.8 – 26.9 tok/s <span>（5.2K 長文穩守 22.7 tok/s）</span></div>
-            <ul class="mode-list">
+            <div id="fastSpeed" class="mode-speed">24.8 – 26.9 tok/s <span>（5.2K 長文穩守 22.7 tok/s）</span></div>
+            <ul id="fastList" class="mode-list">
               <li><strong>最適合情境</strong>：繁體中文對話、日常問答、翻譯寫作、長文章摘要（2K–32K）與一般 <code>temperature = 1.0</code> 使用。</li>
               <li><strong>為何更快</strong>：使用原生 INT8 <code>k8v8</code> KV 快取並關閉 DSpark，避免無 WMMA 驗證樹拖慢，並多省約 400 MiB 顯存。</li>
               <li><strong>啟動時間</strong>：約 8.6 秒即可 100% 載入 VRAM。</li>
             </ul>
-            <div class="mode-meta">參數：<code>--kv k8v8 --draft off --max-context 32768</code> · 預設溫度 1.0</div>
+            <div id="fastMeta" class="mode-meta">參數：<code>--kv k8v8 --draft off --max-context 32768</code> · 預設溫度 1.0</div>
           </div>
 
           <div id="cardDspark" class="mode-card" onclick="selectMode('dspark')">
@@ -836,49 +836,58 @@
               <div class="mode-title">🚀 低溫爆發模式（DSpark）</div>
               <span class="pill-alt">英文寫程式 / 數學專用</span>
             </div>
-            <div class="mode-speed">29.5 – 32.1 tok/s <span>（限低溫英文高預測性輸出）</span></div>
-            <ul class="mode-list">
+            <div id="dsparkSpeed" class="mode-speed">29.5 – 32.1 tok/s <span>（限低溫英文高預測性輸出）</span></div>
+            <ul id="dsparkList" class="mode-list">
               <li><strong>最適合情境</strong>：低溫（<code>temperature ≤ 0.2</code>）英文程式碼補全、JSON/YAML 結構化輸出、數學步驟推導。</li>
               <li><strong>使用須知</strong>：繁體中文、自由聊天與 5K 以上長文接受率較低時，速度會掉至 17–23 tok/s，日常請用「極速全能模式」。</li>
               <li><strong>啟動時間</strong>：約 9.0 秒載入（含內建 DSpark 草稿層）。</li>
             </ul>
-            <div class="mode-meta">參數：<code>--kv k8v8 --draft dspark --max-context 32768</code> · 預設溫度 0.2</div>
+            <div id="dsparkMeta" class="mode-meta">參數：<code>--kv k8v8 --draft dspark --max-context 32768</code> · 預設溫度 0.2</div>
           </div>
         </div>
 
-        <div class="form-grid">
+        <div class="form-grid" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
           <div class="field">
             <label for="selContext">最大上下文長度（Context）</label>
             <select id="selContext">
-              <option value="8192">8K（8,192 tokens · 超省顯存）</option>
-              <option value="16384">16K（16,384 tokens · 均衡）</option>
+              <option value="8192">8K（8,192 tokens · 超省記憶體）</option>
+              <option value="16384">16K（16,384 tokens · 24 GB 黃金甜區）</option>
               <option value="32768" selected>32K（32,768 tokens · 推薦預設）</option>
               <option value="65536">64K（65,536 tokens · 長文件專用）</option>
             </select>
-            <div class="field-hint">KV 快取採彈性動態配置，32K 即可穩定 100% 駐留 12 GB 顯存。</div>
+            <div id="ctxHint" class="field-hint">KV 快取採彈性動態配置，32K 即可穩定 100% 駐留顯存。</div>
           </div>
           <div class="field">
             <label for="selKv">KV 快取量化格式</label>
             <select id="selKv">
               <option value="k8v8" selected>k8v8（原生 INT8 · RDNA2 最快推薦）</option>
-              <option value="fp8">fp8（通用 8-bit 浮點 · Apple Metal 推薦）</option>
+              <option value="fp8">fp8（通用 8-bit 浮點 · Apple Metal 預設）</option>
               <option value="k8v4">k8v4（超長文本更省顯存）</option>
               <option value="fp16">fp16（無損 16-bit · 大記憶體專用）</option>
             </select>
             <div id="kvHint" class="field-hint">本機實測 <code>k8v8</code> 比 <code>fp16</code> 快 +73%，長文 Prefill 比 <code>fp8</code> 再快 +14%。</div>
           </div>
           <div class="field">
+            <label for="selChunk">Prefill 分塊大小（Chunk）</label>
+            <select id="selChunk">
+              <option value="256">256（極省記憶體）</option>
+              <option value="512">512（引擎標準預設）</option>
+              <option value="1024" selected>1024（Apple M5 實測 +7–15% 加速）</option>
+            </select>
+            <div id="chunkHint" class="field-hint">1024 僅多佔 0.34 GiB 即可讓 8K Prefill 提升 +7%～+15%。</div>
+          </div>
+          <div class="field">
             <label for="inpPort">本機服務連接埠（Port）</label>
             <input id="inpPort" type="number" min="1024" max="65535" value="8081" />
-            <div class="field-hint">預設 8081，刻意與 <code>G:\AI\Strata</code>（Qwen，8080）錯開避免衝突。</div>
+            <div id="portHint" class="field-hint">預設 8081，與外部 Agent 閘道（11435）分離運作。</div>
           </div>
         </div>
       </div>
 
       <div class="panel">
-        <h2 class="panel-title">RX 6700 XT 本機實測調校成果（32K 上下文 · 100% VRAM）</h2>
-        <p class="panel-desc">對照未調校設定與官方卡片數值，讓您清楚掌握目前設定的效能定位：</p>
-        <div class="bench-rows">
+        <h2 id="benchPanelTitle" class="panel-title">RX 6700 XT 本機實測調校成果（32K 上下文 · 100% VRAM）</h2>
+        <p class="panel-desc">對照未調校設定與實測數值，讓您清楚掌握目前設定的效能定位：</p>
+        <div id="benchRows" class="bench-rows">
           <div class="bench-row">
             <div><strong>🏆 極速全能（k8v8 + draft off）</strong></div>
             <div class="bench-track"><div class="bench-fill" style="width: 78%;"></div></div>
@@ -1248,7 +1257,8 @@ print(resp.choices[0].message.content)</pre>
       return `${h} 小時 ${m % 60} 分`;
     }
 
-    function updateEndpointLabels(port) {
+    function updateEndpointLabels(port, modelKey) {
+      const mid = modelKey || (currentStatus && currentStatus.files && currentStatus.files.model_key) || "inkling-2-mini-sq-15";
       document.getElementById("activeEndpointHint").textContent = `端點：http://127.0.0.1:${port}`;
       document.getElementById("epChat").textContent = `http://127.0.0.1:${port}`;
       document.getElementById("epOpenAI").textContent = `http://127.0.0.1:${port}/v1`;
@@ -1258,7 +1268,7 @@ print(resp.choices[0].message.content)</pre>
 
 client = OpenAI(base_url="http://127.0.0.1:${port}/v1", api_key="local")
 resp = client.chat.completions.create(
-    model="inkling-2-mini-sq-10",
+    model="${mid}",
     messages=[{"role": "user", "content": "請用繁體中文介紹快速排序法"}],
     temperature=1.0,
     max_tokens=1024,
@@ -1271,13 +1281,16 @@ print(resp.choices[0].message.content)`;
         const r = await fetch("/api/status");
         const st = await r.json();
         currentStatus = st;
+        const isMac = !!(st.platform && st.platform.is_mac);
+        const packName = (st.files && st.files.model_pack) || (isMac ? "SQ-15" : "SQ-10");
+        const gpuName = (st.hardware && st.hardware.gpu_name) || (isMac ? "Apple Silicon" : "GPU");
 
         const pill = document.getElementById("statusPill");
         const stText = document.getElementById("statusText");
         pill.className = "status-pill " + st.state;
         const labelMap = {
-          stopped: "已停止（顯存已釋放）",
-          starting: "載入模型至 VRAM 中...",
+          stopped: isMac ? "已停止（統一記憶體已釋放）" : "已停止（顯存已釋放）",
+          starting: isMac ? "載入模型至 Metal 統一記憶體..." : "載入模型至 VRAM 中...",
           running: `運行中 · ${st.mode === "dspark" ? "低溫爆發 DSpark" : "極速全能模式"}`
         };
         stText.textContent = labelMap[st.state] || st.state;
@@ -1288,15 +1301,15 @@ print(resp.choices[0].message.content)`;
         if (st.state === "running") {
           mState.textContent = "運作正常";
           mState.style.color = "#34d399";
-          mSub.textContent = `${st.kv} · ${Math.round(st.context / 1024)}K 上下文 · 已運行 ${fmtUptime(st.uptime_s)}`;
+          mSub.textContent = `${st.kv} · ${Math.round(st.context / 1024)}K · chunk ${st.chunk || 512} · 已運行 ${fmtUptime(st.uptime_s)}`;
         } else if (st.state === "starting") {
           mState.textContent = "載入中...";
           mState.style.color = "#fbbf24";
-          mSub.textContent = `正在將 SQ-10 載入 RX 6700 XT 顯存（${fmtUptime(st.uptime_s)}）`;
+          mSub.textContent = `正在將 ${packName} 載入 ${gpuName}（${fmtUptime(st.uptime_s)}）`;
         } else {
           mState.textContent = "待命中";
           mState.style.color = "#cbd5e1";
-          mSub.textContent = "點擊「啟動模型服務」，約 8.6 秒載入完成";
+          mSub.textContent = isMac ? "點擊「啟動模型服務」，零拷貝僅需約 0.9–1.5 秒載入" : "點擊「啟動模型服務」，約 8.6 秒載入完成";
         }
 
         document.getElementById("metricCpu").textContent = `CPU ${st.hardware.cpu_pct}%`;
@@ -1320,15 +1333,61 @@ print(resp.choices[0].message.content)`;
           platformInit = true;
           selectMode(st.platform.recommended_mode || "fast");
           document.getElementById("selKv").value = st.platform.default_kv || "k8v8";
+          if (st.platform.default_chunk) {
+            document.getElementById("selChunk").value = String(st.platform.default_chunk);
+          }
           if (st.platform.is_mac) {
-            document.getElementById("metricSpeed").textContent = "Metal + DSpark";
-            document.getElementById("metricSpeedSub").textContent = "Apple Silicon 建議開啟 DSpark 加速";
-            document.getElementById("kvHint").innerHTML = "Apple Silicon Metal 預設使用 <code>fp8</code>（省記憶體又快），24 GB 跑 SQ-15 亦支援無損 <code>fp16</code>。";
-            const recDspark = document.querySelector("#cardDspark .pill-alt");
-            if (recDspark) { recDspark.textContent = "Mac Metal 推薦預設"; recDspark.className = "pill-rec"; }
-            const altFast = document.querySelector("#cardFast .pill-rec");
-            if (altFast) { altFast.textContent = "純解碼模式"; altFast.className = "pill-alt"; }
-            document.getElementById("playTemp").value = "1.0";
+            document.title = `Strata Inkling-2-Mini 控制台 · ${gpuName} Metal 4 調校版`;
+            document.getElementById("btnStop").textContent = "■ 停止並釋放記憶體";
+            document.getElementById("metricSpeed").textContent = "25.1–26.2 tok/s";
+            document.getElementById("metricSpeedSub").textContent = "低溫 DSpark 英文寫程式可飆 39.9 tok/s";
+            document.getElementById("controlPanelDesc").textContent =
+              `已針對本機 ${gpuName}（${st.hardware.memory_label} · Metal 4 MPP 神經加速器）完成多輪實測，提供以下兩組最佳化模式：`;
+            document.getElementById("fastSpeed").innerHTML = `25.1 – 26.2 tok/s <span>（8K 長文 Prefill 437–474 p/s · Decode 25.2 tok/s）</span>`;
+            document.getElementById("fastList").innerHTML = `
+              <li><strong>最適合情境</strong>：繁體中文對話、日常問答、翻譯寫作、8K–32K 長文件摘要與 <code>temperature = 1.0</code> 全能使用。</li>
+              <li><strong>為何比原版 Mac 預設快近 3 倍</strong>：基礎版 M5 跑繁中／長文時 DSpark 接受率僅 4–10%，關閉 DSpark 改純解碼並搭配 <code>--chunk 1024</code> 可從 8.9 飆升至 25.1+ tok/s，並再省 190 MiB 記憶體。</li>
+              <li><strong>極速零拷貝載入</strong>：約 0.9 秒完成載入（<code>TotalAlloc 15.0–15.5 GiB</code>，穩居 Metal 上限內）。</li>`;
+            document.getElementById("fastMeta").innerHTML = `參數：<code>--kv fp8 --draft off --chunk 1024 --max-context 32768</code> · Metal Keep-Alive 10 分鐘`;
+            document.getElementById("dsparkSpeed").innerHTML = `38.1 – 39.9 tok/s <span>（低溫英文程式碼 / 數學步驟推導）</span>`;
+            document.getElementById("dsparkList").innerHTML = `
+              <li><strong>最適合情境</strong>：低溫（<code>temperature ≤ 0.2</code>）英文程式碼補全、JSON/YAML 結構化輸出、英文數學推導（接受率 61–70%）。</li>
+              <li><strong>使用須知</strong>：繁體中文與長文接受率低時會降到 ~9–11 tok/s；日常中英混合請選「極速全能模式」。</li>
+              <li><strong>啟動時間</strong>：約 1.5 秒載入（含內建 DSpark 草稿層與 Metal 4 MPP 核心）。</li>`;
+            document.getElementById("dsparkMeta").innerHTML = `參數：<code>--kv fp8 --draft dspark --chunk 1024 --max-context 16384/32768</code> · 預設溫度 0.2`;
+            document.getElementById("kvHint").innerHTML =
+              "Apple Metal 引擎原生以高效 <code>FP16</code> 配置 KV 快取（32K 佔 1.16 GiB、16K 僅佔 0.66 GiB），24 GB 機型切 16K 可多釋放 512 MiB 餘裕。";
+            document.getElementById("ctxHint").textContent = "24 GB 統一記憶體跑 SQ-15：32K 總佔 ~15.5 GiB，16K 僅 ~15.0 GiB（Prefill 最高可達 474 p/s）。";
+            document.getElementById("benchPanelTitle").textContent = `${gpuName} 本機實測調校成果（${packName} · Metal 4 MPP）`;
+            document.getElementById("benchRows").innerHTML = `
+              <div class="bench-row">
+                <div><strong>🚀 低溫 DSpark + chunk 1024（英文寫程式）</strong></div>
+                <div class="bench-track"><div class="bench-fill indigo" style="width: 100%;"></div></div>
+                <div class="bench-val" style="color: #818cf8;">39.9 tok/s</div>
+              </div>
+              <div class="bench-row">
+                <div><strong>🏆 極速全能（draft off + chunk 1024 · 繁中）</strong></div>
+                <div class="bench-track"><div class="bench-fill" style="width: 66%;"></div></div>
+                <div class="bench-val" style="color: #34d399;">26.2 tok/s</div>
+              </div>
+              <div class="bench-row">
+                <div><strong>🏆 極速全能（8K 長文解碼 · 7,935 tok）</strong></div>
+                <div class="bench-track"><div class="bench-fill" style="width: 63%;"></div></div>
+                <div class="bench-val" style="color: #34d399;">25.2 tok/s</div>
+              </div>
+              <div class="bench-row">
+                <div>原版 Mac 預設（DSpark · 8K 長文解碼）</div>
+                <div class="bench-track"><div class="bench-fill muted" style="width: 25%;"></div></div>
+                <div class="bench-val">10.1 tok/s</div>
+              </div>
+              <div class="bench-row">
+                <div>原版 Mac 預設（DSpark · 繁中日常對話）</div>
+                <div class="bench-track"><div class="bench-fill muted" style="width: 22%;"></div></div>
+                <div class="bench-val">8.9 tok/s</div>
+              </div>`;
+            PRESETS.zh = "請用繁體中文詳細說明 Apple Silicon 統一記憶體與 Metal 4 神經加速器如何讓 26B MoE 模型順暢跑在 24 GB Mac 上，約 150 字。";
+            const pInput = document.getElementById("promptInput");
+            if (pInput && pInput.value.includes("12 GB 顯卡")) pInput.value = PRESETS.zh;
           }
         }
 
@@ -1337,7 +1396,7 @@ print(resp.choices[0].message.content)`;
         document.getElementById("btnOpenChat").disabled = (st.state !== "running");
         document.getElementById("btnQuickBench").disabled = (st.state !== "running");
 
-        updateEndpointLabels(st.port);
+        updateEndpointLabels(st.port, st.files && st.files.model_key);
         if (st.gateway) updateGatewayUI(st.gateway);
 
         // Warnings
@@ -1357,13 +1416,15 @@ print(resp.choices[0].message.content)`;
     async function startModel() {
       const btn = document.getElementById("btnStart");
       btn.disabled = true;
+      const isMac = !!(currentStatus && currentStatus.platform && currentStatus.platform.is_mac);
       const body = {
         mode: selectedMode,
         context: parseInt(document.getElementById("selContext").value, 10),
         kv: document.getElementById("selKv").value,
+        chunk: parseInt(document.getElementById("selChunk").value, 10) || (isMac ? 1024 : 512),
         port: parseInt(document.getElementById("inpPort").value, 10) || 8081
       };
-      showToast("正在啟動模型並載入至 RX 6700 XT 顯存（約 8.6 秒）...");
+      showToast(isMac ? "正在零拷貝載入模型至 Metal 統一記憶體（約 1 秒）..." : "正在啟動模型並載入至 GPU 顯存（約 8.6 秒）...");
       try {
         const r = await fetch("/api/start", {
           method: "POST",
@@ -1382,11 +1443,12 @@ print(resp.choices[0].message.content)`;
 
     async function stopModel() {
       document.getElementById("btnStop").disabled = true;
-      showToast("正在停止服務並釋放 12 GB VRAM...");
+      const isMac = !!(currentStatus && currentStatus.platform && currentStatus.platform.is_mac);
+      showToast(isMac ? "正在停止服務並釋放統一記憶體..." : "正在停止服務並釋放 GPU VRAM...");
       try {
         const r = await fetch("/api/stop", { method: "POST" });
         const res = await r.json();
-        if (res.ok) showToast("服務已安全停止，顯存與記憶體已釋放。");
+        if (res.ok) showToast("服務已安全停止，記憶體與 GPU 資源已釋放。");
         await refreshStatus();
       } catch (e) {
         showToast("停止失敗：" + e);
@@ -1580,7 +1642,8 @@ print(resp.choices[0].message.content)`;
         api_key: document.getElementById("gwApiKey").value.trim(),
         default_mode: selectedMode,
         default_context: parseInt(document.getElementById("selContext").value, 10) || 32768,
-        default_kv: document.getElementById("selKv").value || "k8v8",
+        default_kv: document.getElementById("selKv").value || "fp8",
+        default_chunk: parseInt(document.getElementById("selChunk").value, 10) || 1024,
         backend_port: parseInt(document.getElementById("inpPort").value, 10) || 8081
       };
     }

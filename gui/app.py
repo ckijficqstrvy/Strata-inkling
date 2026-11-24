@@ -75,10 +75,36 @@ PACK_CATALOG = {
 }
 
 _LOCK = threading.Lock()
-_CONFLICT_CACHE = {"ts": 0.0, "data": []}
+_CONFLICT_CACHE: dict = {"ts": 0.0, "data": [], "refreshing": False}
 _HW_CACHE: dict | None = None
 _HTTPD_REF: list[ThreadingHTTPServer] = []
 _GATEWAY_REF: list[AgentGatewayManager] = []
+
+
+class _FastThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    request_queue_size = 64
+
+
+def _query_metal_workset_gib() -> float | None:
+    if not IS_MAC:
+        return None
+    try:
+        import ctypes
+        objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        metal = ctypes.CDLL("/System/Library/Frameworks/Metal.framework/Metal")
+        metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        dev = metal.MTLCreateSystemDefaultDevice()
+        if not dev:
+            return None
+        msg_u64 = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+        ws = msg_u64(dev, objc.sel_registerName(b"recommendedMaxWorkingSetSize"))
+        return round(ws / (1024 ** 3), 2) if ws else None
+    except Exception:
+        return None
 
 
 def _get_gateway() -> AgentGatewayManager:
@@ -101,18 +127,25 @@ def _detect_hardware_static() -> dict:
                 chip = r.stdout.strip()
         except Exception:
             pass
+        is_high_bw = any(tier in chip for tier in ("Max", "Ultra"))
+        workset_gib = _query_metal_workset_gib()
+        # Empirically tuned on Apple M5 24 GB: base M1-M5 chips get 2.5-2.8x faster CJK & 8K decode
+        # with draft=off (25.1-26.2 vs 8.9 tok/s), while Max/Ultra high-BW chips default to dspark.
         _HW_CACHE = {
             "os": "macOS",
             "is_mac": True,
             "is_win": False,
             "backend": "metal",
             "gpu_name": chip,
-            "gpu_arch": "Apple Silicon Metal (Unified)",
+            "gpu_arch": "Apple Silicon Metal 4 MPP" if "M5" in chip else "Apple Silicon Metal (Unified)",
             "gpu_vram_gb": int(round(ram_gb)),
+            "metal_workset_gib": workset_gib,
+            "is_high_bw_mac": is_high_bw,
             "unified_memory": True,
-            "memory_label": f"{int(round(ram_gb))} GB 統一記憶體",
-            "recommended_mode": "dspark",
+            "memory_label": f"{int(round(ram_gb))} GB 統一記憶體" + (f" · Metal 上限 {workset_gib} GiB" if workset_gib else ""),
+            "recommended_mode": "dspark" if is_high_bw else "fast",
             "default_kv": "fp8",
+            "default_chunk": 1024,
         }
     else:
         gpu_name = "AMD Radeon RX 6700 XT"
@@ -156,6 +189,7 @@ def _detect_hardware_static() -> dict:
             "memory_label": f"{vram_gb} GB VRAM",
             "recommended_mode": "fast" if is_rdna2 else "dspark",
             "default_kv": "k8v8" if is_rdna2 else "fp8",
+            "default_chunk": 512,
         }
     return _HW_CACHE
 
@@ -163,7 +197,7 @@ def _detect_hardware_static() -> dict:
 def detect_installed_model() -> dict:
     """Detect installed Inkling-2-Mini pack (SQ-20 / SQ-15 / SQ-10) and tokenizer directory."""
     # Prefer the largest verified pack present in models/Inkling-2-Mini-Strata
-    preferred_order = ("SQ-15", "SQ-20", "SQ-10") if IS_MAC else ("SQ-10", "SQ-15", "SQ-20")
+    preferred_order = ("SQ-20", "SQ-15", "SQ-10") if IS_MAC else ("SQ-10", "SQ-15", "SQ-20")
     for pack_name in preferred_order:
         meta = PACK_CATALOG[pack_name]
         fpath = MODELS_DIR / meta["file"]
@@ -238,10 +272,7 @@ def _fetch_json(url: str, timeout: float = 1.2) -> dict | None:
         return None
 
 
-def _check_conflicts(active_port: int) -> list[dict]:
-    now = time.time()
-    if now - _CONFLICT_CACHE["ts"] < 5.0:
-        return _CONFLICT_CACHE["data"]
+def _scan_conflicts_sync(active_port: int) -> list[dict]:
     warnings: list[dict] = []
     if not IS_MAC and active_port != 8080 and _port_open(8080):
         warnings.append({
@@ -254,7 +285,7 @@ def _check_conflicts(active_port: int) -> list[dict]:
     if ollama:
         try:
             kwargs = {"creationflags": CREATE_NO_WINDOW} if IS_WIN else {}
-            r = subprocess.run([ollama, "ps"], capture_output=True, text=True, errors="ignore", timeout=2.5, **kwargs)
+            r = subprocess.run([ollama, "ps"], capture_output=True, text=True, errors="ignore", timeout=2.0, **kwargs)
             lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
             if len(lines) > 1:
                 loaded_names = [ln.split()[0] for ln in lines[1:]]
@@ -266,9 +297,81 @@ def _check_conflicts(active_port: int) -> list[dict]:
                 })
         except Exception:
             pass
-    _CONFLICT_CACHE["ts"] = now
-    _CONFLICT_CACHE["data"] = warnings
+    if IS_MAC:
+        try:
+            # Check macOS swap usage and high-memory background apps on unified memory Macs
+            swap_out = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=1.5).stdout
+            import re as _re
+            m_used = _re.search(r"used\s*=\s*([\d.]+)M", swap_out or "")
+            swap_gb = float(m_used.group(1)) / 1024.0 if m_used else 0.0
+            vm = psutil.virtual_memory()
+            ram_total_gb = vm.total / (1024 ** 3)
+            if ram_total_gb <= 26.0 and (swap_gb >= 2.5 or vm.percent >= 85.0):
+                # Aggregate top memory-hungry GUI apps so the user knows exactly what to close
+                app_rss: dict[str, int] = {}
+                for p in psutil.process_iter(["exe", "name", "memory_info"]):
+                    try:
+                        mi = p.info.get("memory_info")
+                        if not mi or mi.rss < 80 * 1024 * 1024:
+                            continue
+                        exe = p.info.get("exe") or p.info.get("name") or ""
+                        if "strata-inkling" in exe or "WindowServer" in exe:
+                            continue
+                        if ".app/" in exe:
+                            label = exe.split(".app/")[0].rsplit("/", 1)[-1]
+                        else:
+                            continue
+                        if label in ("Antigravity", "Finder", "Dock"):
+                            continue
+                        app_rss[label] = app_rss.get(label, 0) + mi.rss
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                heavy = [
+                    f"{k} ({v / (1024**3):.1f} GB)"
+                    for k, v in sorted(app_rss.items(), key=lambda kv: -kv[1])[:4]
+                    if v >= 500 * 1024 * 1024
+                ]
+                if heavy or swap_gb >= 3.5:
+                    detail = f"目前 macOS Swap 已用 {swap_gb:.1f} GB。"
+                    if heavy:
+                        detail += f" 建議先關閉高耗記憶體背景 App：{', '.join(heavy)}，可大幅降低統一記憶體換頁延遲。"
+                    warnings.append({
+                        "kind": "mac_memory_pressure",
+                        "level": "warn",
+                        "title": "偵測到 24 GB 統一記憶體壓力偏高",
+                        "detail": detail,
+                    })
+        except Exception:
+            pass
+    if _GATEWAY_REF:
+        gw = _GATEWAY_REF[0]
+        gw_port = int(gw.config.get("port") or 11435)
+        if gw.config.get("enabled", True) and not gw.running and _port_open(gw_port):
+            warnings.append({
+                "kind": "gateway_port_busy",
+                "level": "warn",
+                "title": f"開放 Agent 閘道埠口 {gw_port} 已被其他程式佔用（如 SSH 隧道）",
+                "detail": f"請至「🌐 開放 Agent 接口」將連接埠改為 {gw_port + 1}（例如 11436），或釋放 {gw_port} 後重新開啟閘道。",
+            })
     return warnings
+
+
+def _check_conflicts(active_port: int) -> list[dict]:
+    """Non-blocking cached conflict & memory check (15s TTL; never stalls /api/status or Gateway)."""
+    now = time.monotonic()
+    if now - _CONFLICT_CACHE["ts"] < 15.0:
+        return _CONFLICT_CACHE["data"]
+    if not _CONFLICT_CACHE["refreshing"]:
+        _CONFLICT_CACHE["refreshing"] = True
+        def _worker() -> None:
+            try:
+                data = _scan_conflicts_sync(active_port)
+                _CONFLICT_CACHE["data"] = data
+                _CONFLICT_CACHE["ts"] = time.monotonic()
+            finally:
+                _CONFLICT_CACHE["refreshing"] = False
+        threading.Thread(target=_worker, name="ConflictScanner", daemon=True).start()
+    return _CONFLICT_CACHE["data"]
 
 
 def _read_active_config_defaults() -> dict:
@@ -278,6 +381,7 @@ def _read_active_config_defaults() -> dict:
         "mode": hw["recommended_mode"],
         "context": 32768,
         "kv": hw["default_kv"],
+        "chunk": hw.get("default_chunk", 512),
         "port": 8081,
     }
     for cand in (
@@ -292,6 +396,8 @@ def _read_active_config_defaults() -> dict:
                     out["context"] = int(args[args.index("--max-context") + 1])
                 if "--kv" in args:
                     out["kv"] = str(args[args.index("--kv") + 1])
+                if "--chunk" in args:
+                    out["chunk"] = int(args[args.index("--chunk") + 1])
                 if "--draft" in args:
                     out["mode"] = "dspark" if str(args[args.index("--draft") + 1]) == "dspark" else "fast"
                 if cfg.get("port"):
@@ -311,6 +417,7 @@ def get_status() -> dict:
     mode = (st or {}).get("mode") or defaults["mode"]
     context = int((st or {}).get("context") or defaults["context"])
     kv = (st or {}).get("kv") or defaults["kv"]
+    chunk = int((st or {}).get("chunk") or defaults.get("chunk") or hw.get("default_chunk", 512))
 
     state_str = "stopped"
     health = None
@@ -349,6 +456,7 @@ def get_status() -> dict:
         "port": port,
         "context": context,
         "kv": kv,
+        "chunk": chunk,
         "uptime_s": round(uptime_s, 1),
         "health": health,
         "models": models,
@@ -359,6 +467,9 @@ def get_status() -> dict:
             "backend": hw["backend"],
             "recommended_mode": hw["recommended_mode"],
             "default_kv": hw["default_kv"],
+            "default_chunk": hw.get("default_chunk", 512),
+            "is_high_bw_mac": hw.get("is_high_bw_mac", False),
+            "metal_workset_gib": hw.get("metal_workset_gib"),
         },
         "endpoints": {
             "chat_ui": f"http://127.0.0.1:{port}",
@@ -416,6 +527,12 @@ def start_model(params: dict) -> dict:
         if kv not in ("k8v8", "k8v4", "fp8", "fp16"):
             kv = hw["default_kv"]
         try:
+            chunk = int(params.get("chunk") or hw.get("default_chunk", 512))
+        except (TypeError, ValueError):
+            chunk = int(hw.get("default_chunk", 512))
+        if chunk not in (256, 512, 1024):
+            chunk = int(hw.get("default_chunk", 512))
+        try:
             port = int(params.get("port") or 8081)
         except (TypeError, ValueError):
             port = 8081
@@ -440,19 +557,32 @@ def start_model(params: dict) -> dict:
             "--kv", kv,
             "--draft", draft_arg,
         ]
+        if IS_MAC or chunk != 512:
+            args += ["--chunk", str(chunk)]
         vis_file = MODELS_DIR / "Inkling-2-Mini-Vision.strata"
         if vis_file.is_file() and (IS_MAC or params.get("vision")):
             args += ["--vision", str(vis_file)]
 
-        # On macOS Metal, temperature=1.0 works great with DSpark; on Windows RDNA2, DSpark is a low-temp burst profile
-        default_temp = 1.0 if (IS_MAC or mode != "dspark") else 0.2
+        # Empirically optimal default temperature: 1.0 for pure decode / high-BW Mac; 0.2 for DSpark burst on base M5 & RDNA2
+        default_temp = 1.0 if (mode != "dspark" or hw.get("is_high_bw_mac")) else 0.2
+        engine_env: dict[str, str] = {}
+        if IS_MAC:
+            # Empirically validated on Apple M5 24 GB:
+            # - SPIN=1 yields +7%..+17% higher throughput vs SPIN=0
+            # - Safe math (default) beats fast math in both accuracy and throughput
+            # - 600s GPU keep-alive window keeps 13.36 GiB weights pinned hot across Agent pauses (auto-pauses on memory pressure)
+            engine_env = {
+                "STRATA_METAL_SPIN": "1",
+                "STRATA_METAL_KEEPALIVE_MS": "250",
+                "STRATA_METAL_KEEPALIVE_WINDOW_S": "600",
+            }
         cfg = {
             "exe": str(ENGINE_EXE),
             "args": args,
             "cwd": str(CONTROL_DIR),
             "tokenizer": str(mdl["tokenizer_dir"]),
             "model_name": mdl["model_key"],
-            "aliases": [mdl["model_key"], "inkling-2-mini-sq-10", "inkling-2-mini-sq-15", "inkling-2-mini", "inkling", "strata"],
+            "aliases": [mdl["model_key"], "inkling-2-mini-sq-10", "inkling-2-mini-sq-15", "inkling-2-mini-sq-20", "inkling-2-mini", "inkling", "strata"],
             "arch": "inkling2_loop",
             "backend": hw["backend"],
             "log": str(engine_log),
@@ -464,6 +594,8 @@ def start_model(params: dict) -> dict:
             "fit_max_tokens": True,
             "open_browser": False,
         }
+        if engine_env:
+            cfg["env"] = engine_env
         cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -503,12 +635,25 @@ def start_model(params: dict) -> dict:
             out_f.close()
             err_f.close()
 
+        # On macOS, attach caffeinate -i -w <pid> to prevent idle sleep / App Nap while model is loaded
+        if IS_MAC and shutil.which("caffeinate"):
+            try:
+                subprocess.Popen(
+                    ["caffeinate", "-i", "-w", str(proc.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception:
+                pass
+
         _write_state({
             "pid": proc.pid,
             "mode": mode,
             "port": port,
             "context": context,
             "kv": kv,
+            "chunk": chunk,
             "pack": mdl["pack"],
             "config": str(cfg_file),
             "engine_log": str(engine_log),
@@ -516,6 +661,8 @@ def start_model(params: dict) -> dict:
             "stderr": str(stderr_log),
             "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         })
+        if _GATEWAY_REF:
+            _GATEWAY_REF[0].invalidate_cache()
         return {"ok": True, "pid": proc.pid, "status": get_status()}
 
 
@@ -562,6 +709,8 @@ def stop_model() -> dict:
             except OSError:
                 pass
 
+        if _GATEWAY_REF:
+            _GATEWAY_REF[0].invalidate_cache()
         return {"ok": True, "killed": sorted(set(killed)), "status": get_status()}
 
 
@@ -611,6 +760,13 @@ def read_logs(kind: str = "engine", max_lines: int = 120) -> dict:
 
 class GuiHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def setup(self) -> None:
+        super().setup()
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -851,7 +1007,7 @@ def run_server() -> None:
     gw = _get_gateway()
     if gw.config.get("enabled", True):
         gw.start()
-    httpd = ThreadingHTTPServer((GUI_HOST, GUI_PORT), GuiHandler)
+    httpd = _FastThreadingHTTPServer((GUI_HOST, GUI_PORT), GuiHandler)
     _HTTPD_REF.append(httpd)
     GUI_STATE_FILE.write_text(json.dumps({"pid": os.getpid(), "port": GUI_PORT}), encoding="utf-8")
     try:

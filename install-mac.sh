@@ -90,11 +90,18 @@ case "$MODEL_PACK" in
     exit 1 ;;
 esac
 
+DEFAULT_MODE="fast"
+DEFAULT_DRAFT="off"
+if [[ "$CHIP_NAME" == *"Max"* || "$CHIP_NAME" == *"Ultra"* ]]; then
+  DEFAULT_MODE="dspark"
+  DEFAULT_DRAFT="dspark"
+fi
+
 echo "  Chip / macOS   : $CHIP_NAME (macOS $MACOS_VER)"
 echo "  Unified Memory : ${MEM_GB} GB"
 echo "  Engine Package : strata-inkling-${ENGINE_VERSION}-macos-arm64-metal"
 echo "  Selected Pack  : ${MODEL_PACK} (${PACK_FILE})"
-echo "  Optimal Tuning : --kv fp8 --draft dspark --max-context 32768 (Metal)"
+echo "  Optimal Tuning : --kv fp8 --draft ${DEFAULT_DRAFT} --chunk 1024 --max-context 32768 (Metal 4 MPP)"
 echo ""
 
 FREE_GB="$(df -g "$ROOT" | awk 'NR==2 {print $4}')"
@@ -195,11 +202,43 @@ if not gw_path.is_file():
         "api_key": "",
         "auto_wake": True,
         "idle_unload_min": 0,
-        "default_mode": "dspark",
+        "default_mode": "$DEFAULT_MODE",
         "default_context": 32768,
         "default_kv": "fp8",
+        "default_chunk": 1024,
         "backend_port": $BACKEND_PORT,
     }, indent=2), encoding="utf-8")
+# Pre-generate tuned Apple Silicon Metal run config
+run_cfg_path = root / "strata-$PACK_KEY.json"
+run_cfg_path.write_text(json.dumps({
+    "exe": str(root / "engine" / "strata-inkling"),
+    "args": [
+        "--native", "$MODEL_FILE",
+        "--max-context", "32768",
+        "--kv", "fp8",
+        "--draft", "$DEFAULT_DRAFT",
+        "--chunk", "1024",
+    ],
+    "cwd": str(root / "control"),
+    "tokenizer": "$TOK_OUT",
+    "model_name": "$PACK_KEY",
+    "aliases": ["$PACK_KEY", "inkling-2-mini-sq-15", "inkling-2-mini-sq-10", "inkling-2-mini-sq-20", "inkling-2-mini", "inkling", "strata"],
+    "arch": "inkling2_loop",
+    "backend": "metal",
+    "log": str(root / "logs" / "strata-$PACK_KEY.log"),
+    "lib_dirs": [],
+    "port": $BACKEND_PORT,
+    "drafting": "$DEFAULT_DRAFT",
+    "parallel": 1,
+    "sampling": {"temperature": 1.0},
+    "fit_max_tokens": True,
+    "open_browser": False,
+    "env": {
+        "STRATA_METAL_SPIN": "1",
+        "STRATA_METAL_KEEPALIVE_MS": "250",
+        "STRATA_METAL_KEEPALIVE_WINDOW_S": "600",
+    },
+}, indent=2), encoding="utf-8")
 PY
 
 "$PYTHON_BIN" "$ROOT/gui/make_icon.py"
@@ -239,21 +278,42 @@ exec "$PYTHON_BIN" "$ROOT/gui/app.py" --launch
 EOF
 chmod +x "$APP_BUNDLE/Contents/MacOS/launcher"
 
-# Generate native macOS .icns icon from gui/inkling.png if sips + iconutil exist
+# Generate valid Apple Retina .icns icon from gui/inkling.png if sips + iconutil exist
 if command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1 && [[ -f "$ROOT/gui/inkling.png" ]]; then
   ICONSET="$(mktemp -d)/AppIcon.iconset"
   mkdir -p "$ICONSET"
-  for sz in 16 32 64 128 256; do
-    sips -z $sz $sz "$ROOT/gui/inkling.png" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null 2>&1 || true
-  done
-  iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns" >/dev/null 2>&1 || true
+  sips -z 16 16     "$ROOT/gui/inkling.png" --out "$ICONSET/icon_16x16.png" >/dev/null 2>&1 || true
+  sips -z 32 32     "$ROOT/gui/inkling.png" --out "$ICONSET/icon_16x16@2x.png" >/dev/null 2>&1 || true
+  sips -z 32 32     "$ROOT/gui/inkling.png" --out "$ICONSET/icon_32x32.png" >/dev/null 2>&1 || true
+  sips -z 64 64     "$ROOT/gui/inkling.png" --out "$ICONSET/icon_32x32@2x.png" >/dev/null 2>&1 || true
+  sips -z 128 128   "$ROOT/gui/inkling.png" --out "$ICONSET/icon_128x128.png" >/dev/null 2>&1 || true
+  sips -z 256 256   "$ROOT/gui/inkling.png" --out "$ICONSET/icon_128x128@2x.png" >/dev/null 2>&1 || true
+  sips -z 256 256   "$ROOT/gui/inkling.png" --out "$ICONSET/icon_256x256.png" >/dev/null 2>&1 || true
+  sips -z 512 512   "$ROOT/gui/inkling.png" --out "$ICONSET/icon_256x256@2x.png" >/dev/null 2>&1 || true
+  sips -z 512 512   "$ROOT/gui/inkling.png" --out "$ICONSET/icon_512x512.png" >/dev/null 2>&1 || true
+  if ! iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns" >/dev/null 2>&1; then
+    "$PYTHON_BIN" - "$ICONSET" "$APP_BUNDLE/Contents/Resources/AppIcon.icns" <<'PYICNS'
+import struct, sys
+from pathlib import Path
+src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+chunks = []
+for tag, fn in [(b"icp4","icon_16x16.png"),(b"icp5","icon_32x32.png"),(b"icp6","icon_32x32@2x.png"),(b"ic07","icon_128x128.png"),(b"ic08","icon_256x256.png"),(b"ic09","icon_512x512.png")]:
+    p = src / fn
+    if p.is_file():
+        d = p.read_bytes()
+        chunks.append(tag + struct.pack(">I", len(d) + 8) + d)
+body = b"".join(chunks)
+if body:
+    dst.write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + body)
+PYICNS
+  fi
 fi
 
 echo ""
 echo "============================================================"
 echo "  macOS Apple Silicon 安裝完成！"
 echo "  1. 雙擊「Inkling-2-Mini 控制台.app」（可拖進 Dock）開啟圖形控制台"
-echo "  2. 模型量化包：${MODEL_PACK}（Metal + DSpark 預設開啟）"
+echo "  2. 模型量化包：${MODEL_PACK}（Metal 4 MPP + --chunk 1024 + --draft ${DEFAULT_DRAFT}）"
 echo "  3. 開放 Agent 接口（OpenAI / Ollama / LM Studio / Anthropic）："
 echo "     - OpenAI / LM Studio : http://127.0.0.1:${GATEWAY_PORT}/v1"
 echo "     - Ollama 相容端點    : http://127.0.0.1:${GATEWAY_PORT}"
