@@ -1,0 +1,22 @@
+# Large downloaded binaries, model weights, and extracted Strata runtimes
+models/
+downloads/
+engine/
+control/
+packs/
+
+# Runtime logs, PID state, and browser app profile
+logs/
+gui/.app-profile/
+
+# Machine-specific generated configs and Windows shortcuts
+strata-inkling-sq10.json
+strata-inkling-sq10-dspark.json
+*.bak
+*.lnk
+
+# Python & OS artifacts
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
