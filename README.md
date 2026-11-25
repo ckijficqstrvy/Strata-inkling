@@ -3,6 +3,7 @@
 針對 **Windows（AMD RX 6700 XT 12 GB RDNA2 `gfx1031` / RX 7000–9000 / NVIDIA CUDA）** 與 **macOS Apple Silicon（MacBook Pro M5 24 GB · Metal 4 MPP）** 雙平台深度實測調校的 **Thinking Machines Inkling-2-Mini（26.4B MoE）** 完整本機部署方案，內建：
 - **一鍵自動安裝與下載腳本**（Windows `Install.cmd` / macOS `./install-mac.sh`：自動偵測硬體、選擇最佳 `SQ-10`/`SQ-15`/`SQ-20` 量化包、SHA-256 校驗＋32 MiB 分塊自動修復）
 - **無黑框現代化圖形控制台**（Windows `Inkling-2-Mini 控制台.lnk` / macOS `Inkling-2-Mini 控制台.app`）
+- **原生多段思考深度支援**：整合 `scripts\patch_inkling_thinking.py` 解鎖 `Inkling-2-Mini` 原生 `reasoning_effort`（`none / low / medium / high`），在 GUI 測速區與 Strata Web Chat 皆可即時切換
 - **低延遲開放 Agent 閘道**（單一埠口預設 `11435`，同時相容 **OpenAI / Ollama / LM Studio / Anthropic** 四大協定，內建 Keep-Alive 連線池、`TCP_NODELAY`、JIT 自動喚醒載入與閒置釋放記憶體）
 
 ---
@@ -130,6 +131,24 @@ $env:ANTHROPIC_API_KEY  = "local"
 
 - **`--kv k8v8` 較 `fp16` 快 +73%**：原生 INT8 避開 RDNA2 軟體 FP8 轉換開銷。
 - **預設關閉 DSpark**：RDNA2 無 WMMA 矩陣核心，驗證草稿樹（`M=6..8`）需 127–153 ms（單 token 的 3.3–4.0 倍），因此日常高溫與繁中／長文關閉 DSpark 反而更快更穩；專跑低溫英文數學／程式時再於控制台切換至「低溫爆發模式」。
+
+### 1.5 Windows 多引擎與模型同場實測對比（RX 6700 XT 12 GB）
+
+為確認在 Windows 12 GB 顯卡上的最佳組合，我們以相同硬體環境（Port 單槽獨佔 `-np 1`、`32768` 上下文 + Q8 KV / `k8v8`）實測比較了 **Strata（`.strata` vs `.gguf`）**、**Unsloth `llama.cpp`（Vulkan / ROCm）**、**LM Studio 2.82.0（Vulkan）** 與社群 **AMD Vulkan Fused 分支**；結果證實 **Strata `0.1.66` (HIP) + `Inkling-2-Mini-SQ-10.strata`（`--kv k8v8 --draft off`）** 為日常綜合最快的組合，因此本專案只保留 Strata 與 `.strata` 權重，移除實測較慢或過大的第三方引擎與測試 GGUF。
+
+| 引擎與模型組合 | 繁體中文 (`t=1.0`) | 寫程式 (`t=0.2`) | 數學推導 (`t=0.0`) | 13.5K 長文 Decode | 13.5K 長文 Prefill | 離線基準 (`pp512` / `tg128`) | 備註 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 🏆 **Strata `0.1.66` HIP + `SQ-10`（`draft=off`）** | **39.7** | **40.5** | 42.9 | **25.2** | 66.1 p/s (`203.8s`) | `114.8` / `26.6` | **Windows 綜合與對話首選** |
+| Strata `0.1.66` HIP + `SQ-10` + DSpark | 26.5 | 34.2 | **45.9** | 23.0 | 85.2 p/s (`158.2s`) | — | 僅 `t=0` 數學小贏（繁中接受率僅 15%） |
+| Strata `0.1.66` HIP + raw `UD-Q2_K_XL.gguf` | 6.6 | 6.5 | 5.9 | 6.1 | 73.0 p/s (`184.6s`) | `78.3` / `5.9` | 未打包 `.strata` 會掉速約 6×；加 DSpark 僅 `4.7–6.4` |
+| Unsloth `b12651-mix` Vulkan + `UD-Q2_K_XL` | 30.2 | 27.1 | 30.5 | 25.0 | 103.3 p/s (`130.5s`) | `395.3` / **`29.7`** | 穩定備援；開 DSpark 掉至 `7.8–12.4` |
+| LM Studio `2.82.0` Vulkan + `UD-Q2_K_XL` | 29.3 | 26.4 | 29.8 | 23.5 | 124.6 p/s (`108.2s`) | — | 與 Unsloth Vulkan 相近 |
+| Unsloth `b12651-mix` ROCm `gfx103X` + `UD-Q2_K_XL` | 17.8 | 26.6 | 30.1 | 8.1 | **286.0 p/s (`47.4s`)** | **`637.3`** / `21.6` | Prefill 最快，但長文 Decode 慢；開 DSpark `11.0–15.4` |
+| 社群 AMD Vulkan Fused（`tatuut` `f630fd2` / `vengeful180-dot`） | 無法載入 | 無法載入 | 無法載入 | 無法載入 | — | — | 仍用舊版 `inkling2` GGUF schema，無法載入最新版 `inkling2_loop` GGUF |
+
+> **為何線上社群回報的 tok/s 往往看起來更高？**
+> 1. **顯卡記憶體頻寬與矩陣單元差距**：RX 6700 XT 為 `384 GB/s` 頻寬、無獨立矩陣核心；線上常見高數據多來自 RTX 4090 / 5090（`1008–1792 GB/s`）、RX 7900 XT / XTX（`800–960 GB/s` + WMMA）或 Apple Max / Ultra（`400–800+ GB/s`）。
+> 2. **系統與測試口徑差異**：Linux `amdgpu` + ROCm 沒有 Windows WDDM 排程開銷；且 `llama-bench` 短上下文純吞吐通常高於含思考標籤與長歷史 KV 的完整對話體驗。
 
 ---
 

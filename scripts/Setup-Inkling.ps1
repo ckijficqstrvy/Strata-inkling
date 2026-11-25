@@ -220,6 +220,15 @@ if (!(Test-Path $gwCfgPath)) {
     } | ConvertTo-Json -Depth 3 | Set-Content $gwCfgPath -Encoding utf8
 }
 
+$patchScript = Join-Path $root 'scripts\patch_inkling_thinking.py'
+if (Test-Path $patchScript) {
+    try {
+        & $python $patchScript --control-dir $control | Out-Null
+    } catch {
+        Write-Warning "Inkling thinking patch skipped: $_"
+    }
+}
+
 Write-Host "[6/6] Running GPU selfcheck & creating desktop GUI shortcut..." -ForegroundColor Yellow
 if (Test-Path $modelFile) {
     & $engineExe --selfcheck --native $modelFile --kv $defaultKv
