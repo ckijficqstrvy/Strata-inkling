@@ -220,10 +220,14 @@ if (!(Test-Path $gwCfgPath)) {
     } | ConvertTo-Json -Depth 3 | Set-Content $gwCfgPath -Encoding utf8
 }
 
+$control = Join-Path $root 'control'
 $patchScript = Join-Path $root 'scripts\patch_inkling_thinking.py'
 if (Test-Path $patchScript) {
     try {
         & $python $patchScript --control-dir $control | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Inkling thinking patch exited with code $LASTEXITCODE"
+        }
     } catch {
         Write-Warning "Inkling thinking patch skipped: $_"
     }

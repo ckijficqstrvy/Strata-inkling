@@ -941,9 +941,9 @@ class GuiHandler(BaseHTTPRequestHandler):
 
         max_tokens = min(max(int(body.get("max_tokens") or 512), 16), 4096)
         temperature = float(body.get("temperature") if body.get("temperature") is not None else 1.0)
-        effort = str(body.get("reasoning_effort") or "medium").strip().lower()
+        effort = str(body.get("reasoning_effort") or "none").strip().lower()
         if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
-            effort = "medium"
+            effort = "none"
         port = st["port"]
         model_id = st["files"]["model_key"]
 

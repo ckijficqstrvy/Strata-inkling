@@ -3,7 +3,7 @@
 針對 **Windows（AMD RX 6700 XT 12 GB RDNA2 `gfx1031` / RX 7000–9000 / NVIDIA CUDA）** 與 **macOS Apple Silicon（MacBook Pro M5 24 GB · Metal 4 MPP）** 雙平台深度實測調校的 **Thinking Machines Inkling-2-Mini（26.4B MoE）** 完整本機部署方案，內建：
 - **一鍵自動安裝與下載腳本**（Windows `Install.cmd` / macOS `./install-mac.sh`：自動偵測硬體、選擇最佳 `SQ-10`/`SQ-15`/`SQ-20` 量化包、SHA-256 校驗＋32 MiB 分塊自動修復）
 - **無黑框現代化圖形控制台**（Windows `Inkling-2-Mini 控制台.lnk` / macOS `Inkling-2-Mini 控制台.app`）
-- **原生多段思考深度支援**：整合 `scripts\patch_inkling_thinking.py` 解鎖 `Inkling-2-Mini` 原生 `reasoning_effort`（`none / low / medium / high`），在 GUI 測速區與 Strata Web Chat 皆可即時切換
+- **原生多段思考深度支援**：整合 `scripts/patch_inkling_thinking.py` 解鎖 `Inkling-2-Mini` 原生 `reasoning_effort`（`none / low / medium / high`）；外部 API 未指定時預設為 `none`（最快回應且相容短 `max_tokens` Agent），在 Strata Web Chat 設定、GUI 測速區或 API 傳入 `reasoning_effort` / `enable_thinking` 時可即時切換思考深度
 - **低延遲開放 Agent 閘道**（單一埠口預設 `11435`，同時相容 **OpenAI / Ollama / LM Studio / Anthropic** 四大協定，內建 Keep-Alive 連線池、`TCP_NODELAY`、JIT 自動喚醒載入與閒置釋放記憶體）
 
 ---
