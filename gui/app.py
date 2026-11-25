@@ -25,6 +25,10 @@ GUI_DIR = ROOT / "gui"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from gateway.gateway import AgentGatewayManager, load_gateway_config, save_gateway_config  # noqa: E402
+try:
+    from scripts.patch_inkling_thinking import ensure_patched as ensure_inkling_thinking_patched  # noqa: E402
+except Exception:
+    ensure_inkling_thinking_patched = None
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -587,6 +591,12 @@ def start_model(params: dict) -> dict:
         else:
             save_gateway_config({**load_gateway_config(), "default_pack": mdl["pack"]})
 
+        if ensure_inkling_thinking_patched is not None:
+            try:
+                ensure_inkling_thinking_patched(CONTROL_DIR)
+            except Exception as e:
+                print(f"[gui] warning: could not apply Inkling thinking patch: {e}", file=sys.stderr)
+
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         draft_arg = "dspark" if mode == "dspark" else "off"
         suffix = "-dspark" if mode == "dspark" else ""
@@ -929,8 +939,11 @@ class GuiHandler(BaseHTTPRequestHandler):
         if not prompt:
             return self._send_json({"ok": False, "error": "請輸入測試問題。"}, status=400)
 
-        max_tokens = min(max(int(body.get("max_tokens") or 256), 16), 2048)
+        max_tokens = min(max(int(body.get("max_tokens") or 512), 16), 4096)
         temperature = float(body.get("temperature") if body.get("temperature") is not None else 1.0)
+        effort = str(body.get("reasoning_effort") or "medium").strip().lower()
+        if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            effort = "medium"
         port = st["port"]
         model_id = st["files"]["model_key"]
 
@@ -939,6 +952,7 @@ class GuiHandler(BaseHTTPRequestHandler):
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "reasoning_effort": effort,
             "stream": True,
             "stream_options": {"include_usage": True},
         }).encode("utf-8")
@@ -974,12 +988,16 @@ class GuiHandler(BaseHTTPRequestHandler):
                     ch = ev.get("choices") or []
                     if ch:
                         delta = ch[0].get("delta") or {}
-                        piece = delta.get("content") or delta.get("reasoning_content") or ""
-                        if piece:
+                        reasoning_piece = delta.get("reasoning_content") or ""
+                        content_piece = delta.get("content") or ""
+                        if reasoning_piece or content_piece:
                             if t_first is None:
                                 t_first = time.perf_counter()
                                 out["ttft_s"] = round(t_first - t0, 2)
-                            out["delta"] = piece
+                            if reasoning_piece:
+                                out["reasoning_delta"] = reasoning_piece
+                            if content_piece:
+                                out["delta"] = content_piece
                     if ev.get("usage"):
                         out["usage"] = ev["usage"]
                     if ev.get("timings"):

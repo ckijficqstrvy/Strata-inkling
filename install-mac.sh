@@ -241,6 +241,9 @@ run_cfg_path.write_text(json.dumps({
 }, indent=2), encoding="utf-8")
 PY
 
+if [[ -f "$ROOT/scripts/patch_inkling_thinking.py" ]]; then
+  "$PYTHON_BIN" "$ROOT/scripts/patch_inkling_thinking.py" --control-dir "$ROOT/control" || echo "[WARN] Inkling thinking patch skipped"
+fi
 "$PYTHON_BIN" "$ROOT/gui/make_icon.py"
 
 # 6. Run Metal selfcheck & build native double-clickable macOS .app bundle

@@ -58,6 +58,15 @@ $argList = @(
 )
 if ($OpenBrowser) { $argList += '--open' }
 
+$patchScript = Join-Path $root 'scripts\patch_inkling_thinking.py'
+if (Test-Path $patchScript) {
+    try {
+        & $python $patchScript --control-dir $control | Out-Null
+    } catch {
+        Write-Warning "Inkling thinking patch skipped: $_"
+    }
+}
+
 $env:PYTHONUTF8 = '1'
 $env:PYTHONUNBUFFERED = '1'
 

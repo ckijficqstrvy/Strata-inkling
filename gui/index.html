@@ -1065,6 +1065,15 @@
         <div class="play-controls">
           <div class="action-group">
             <label style="font-size: 12.5px; color: var(--text-muted);">
+              思考強度 (Thinking)：
+              <select id="playEffort" style="padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #0b1224; color: var(--text);">
+                <option value="none">關閉（立即回答）</option>
+                <option value="low">低 (0.2 · 簡短思考)</option>
+                <option value="medium" selected>中 (0.7 · 平衡)</option>
+                <option value="high">高 (0.9 · 深入思考)</option>
+              </select>
+            </label>
+            <label style="font-size: 12.5px; color: var(--text-muted);">
               溫度 (Temperature)：
               <select id="playTemp" style="padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #0b1224; color: var(--text);">
                 <option value="1.0" selected>1.0（官方建議日常對話）</option>
@@ -1077,9 +1086,10 @@
               最大輸出 Tokens：
               <select id="playMaxTok" style="padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #0b1224; color: var(--text);">
                 <option value="160">160（快速測速）</option>
-                <option value="256" selected>256（標準測試）</option>
-                <option value="512">512（完整回答）</option>
+                <option value="256">256（短答）</option>
+                <option value="512" selected>512（標準測試）</option>
                 <option value="1024">1024（長篇輸出）</option>
+                <option value="2048">2048（深度思考）</option>
               </select>
             </label>
           </div>
@@ -1582,6 +1592,7 @@ print(resp.choices[0].message.content)`;
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             prompt,
+            reasoning_effort: document.getElementById("playEffort").value,
             temperature: parseFloat(document.getElementById("playTemp").value),
             max_tokens: parseInt(document.getElementById("playMaxTok").value, 10)
           })
@@ -1595,6 +1606,8 @@ print(resp.choices[0].message.content)`;
         const dec = new TextDecoder("utf-8");
         let buf = "";
         let started = false;
+        let inThinking = false;
+        let answered = false;
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -1611,8 +1624,18 @@ print(resp.choices[0].message.content)`;
             if (ev.ttft_s !== undefined) {
               document.getElementById("stTtft").textContent = ev.ttft_s + " s";
             }
+            if (ev.reasoning_delta) {
+              if (!started) { out.textContent = ""; started = true; }
+              if (!inThinking) { out.textContent += "💭 思考過程：\n"; inThinking = true; }
+              out.textContent += ev.reasoning_delta;
+              out.scrollTop = out.scrollHeight;
+            }
             if (ev.delta) {
               if (!started) { out.textContent = ""; started = true; }
+              if (!answered) {
+                if (inThinking) out.textContent += "\n\n💬 回答：\n";
+                answered = true;
+              }
               out.textContent += ev.delta;
               out.scrollTop = out.scrollHeight;
             }
